@@ -1,225 +1,204 @@
 from pathlib import Path
+import os
 import shutil
 import tempfile
 
 import streamlit as st
 
-from media import prepare_audio, probe_duration
-from transcriber import MODEL_OPTIONS, choose_model, transcribe_file
+from cloud_transcriber import (
+    TRANSCRIPTION_MODEL,
+    TRANSLATION_MODEL,
+    transcribe_chunks,
+)
+from media import split_to_audio_chunks
 from summarizer import extractive_summary
 from utils import transcript_to_srt, format_seconds
 
-
 st.set_page_config(
-    page_title="Whisper Transcriber",
+    page_title="Jami Transcriber",
     page_icon="🎙️",
     layout="wide",
 )
 
+st.markdown("""
+<style>
+.block-container {max-width: 980px; padding-top: 2rem;}
+[data-testid="stFileUploader"] {border-radius: 16px;}
+.hero-sub {font-size: 1.02rem; opacity: .72; margin-top: -.4rem; margin-bottom: 1.1rem;}
+.note {font-size: .9rem; opacity: .72;}
+</style>
+""", unsafe_allow_html=True)
+
+st.title("🎙️ Jami Transcriber")
 st.markdown(
-    """
-    <style>
-    .hero {
-        padding: 0.25rem 0 1.1rem 0;
-    }
-    .hero h1 {
-        margin-bottom: 0.15rem;
-    }
-    .soft-card {
-        border: 1px solid rgba(128,128,128,.22);
-        border-radius: 14px;
-        padding: 1rem 1.1rem;
-        margin: .5rem 0 1rem 0;
-    }
-    .small-note {
-        opacity: .75;
-        font-size: .9rem;
-    }
-    </style>
-    """,
+    '<div class="hero-sub">Fast transcription for long recordings — optimized for Streamlit Community Cloud.</div>',
     unsafe_allow_html=True,
 )
 
-st.markdown(
-    """
-    <div class="hero">
-      <h1>🎙️ Whisper Transcriber</h1>
-      <div class="small-note">
-        Private-by-design processing on the app server · no paid transcription API
-      </div>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+def configured_key() -> str:
+    try:
+        return str(st.secrets.get("GROQ_API_KEY", "") or "").strip()
+    except Exception:
+        return ""
+
+secret_key = configured_key()
 
 with st.sidebar:
-    st.subheader("Transcription")
-    mode = st.selectbox(
-        "Performance mode",
-        list(MODEL_OPTIONS),
-        index=0,
-        help=(
-            "Smart is recommended on Streamlit Community Cloud. "
-            "For long recordings it automatically uses the lighter Whisper model."
-        ),
-    )
-
+    st.subheader("Settings")
     language_label = st.selectbox(
         "Language",
         ["Auto detect", "English", "Urdu"],
         index=0,
-        help="Auto detect is recommended for mixed Urdu/English recordings.",
+        help="Auto detect is best for mixed Urdu/English recordings.",
     )
     language_map = {"Auto detect": None, "English": "en", "Urdu": "ur"}
 
-    task_label = st.selectbox(
-        "Output language",
+    output_label = st.selectbox(
+        "Output",
         ["Keep spoken language", "Translate to English"],
         index=0,
     )
-    task = "transcribe" if task_label == "Keep spoken language" else "translate"
+    translate = output_label == "Translate to English"
 
     timestamps = st.toggle("Timestamps in TXT", value=True)
 
     st.divider()
     st.caption(
-        "Cloud-safe mode is always on: 1 CPU thread, int8 inference, "
-        "greedy decoding and silence skipping."
+        "This cloud version sends compressed audio chunks to Groq's speech-to-text API. "
+        "The original uploaded file is not intentionally retained by this app."
     )
 
+if secret_key:
+    api_key = secret_key
+    st.success("Cloud transcription engine is connected.", icon="✅")
+else:
+    st.info(
+        "Enter a free Groq API key below. It is kept only in this Streamlit session "
+        "unless you later add it to the app's Secrets."
+    )
+    api_key = st.text_input(
+        "Groq API key",
+        type="password",
+        placeholder="gsk_...",
+        help="Create a free key at console.groq.com/keys.",
+    ).strip()
+
 uploaded = st.file_uploader(
-    "Drop an audio or video recording",
+    "Upload audio or video",
     type=["mp3", "mp4", "m4a", "wav", "webm", "mpeg", "mpga", "ogg", "flac"],
     accept_multiple_files=False,
-    help="For fastest uploads, audio-only MP3/M4A is better than MP4 video.",
+    help="MP3/M4A uploads are fastest. MP4 works too; only its audio track is transcribed.",
 )
 
 if uploaded is None:
     st.markdown(
-        """
-        <div class="soft-card">
-          <b>How it works</b><br>
-          1. Upload a recording &nbsp;→&nbsp; 2. Audio is normalized &nbsp;→&nbsp;
-          3. Whisper transcribes &nbsp;→&nbsp; 4. Download TXT/SRT
-        </div>
-        """,
-        unsafe_allow_html=True,
+        "**Workflow:** upload → compress to speech-only audio → transcribe in small chunks → "
+        "merge timestamps → download TXT/SRT/summary."
     )
-    st.info("Ready for your recording.")
     st.stop()
 
 suffix = Path(uploaded.name).suffix.lower() or ".media"
-file_size_mb = uploaded.size / (1024 * 1024)
+size_mb = uploaded.size / (1024 * 1024)
 
 c1, c2, c3 = st.columns(3)
 c1.metric("File", uploaded.name)
-c2.metric("Upload size", f"{file_size_mb:.1f} MB")
-c3.metric("Engine", "Cloud-safe Whisper")
+c2.metric("Upload", f"{size_mb:.1f} MB")
+c3.metric("Mode", "Cloud Whisper")
 
-if suffix in {".mp4", ".webm", ".mpeg"}:
-    st.caption(
-        "Video preview is intentionally disabled to save memory. "
-        "Only the audio track is used for transcription."
+if size_mb > 250:
+    st.warning(
+        "This is a large upload. It will work if Streamlit accepts it, but converting the source "
+        "to MP3/M4A before uploading will be much faster."
     )
+
+if not api_key:
+    st.warning("Add the API key above to enable transcription.")
+    st.stop()
 
 if st.button("Transcribe recording", type="primary", use_container_width=True):
     st.session_state.pop("result", None)
-    st.session_state["source_name"] = uploaded.name
 
-    original_path = None
-    audio_path = None
+    work_dir = Path(tempfile.mkdtemp(prefix="jami_transcriber_"))
+    source_path = work_dir / f"source{suffix}"
 
-    progress = st.progress(0.0, text="Preparing upload…")
-    status = st.empty()
-
-    def set_progress(value: float, message: str):
-        progress.progress(max(0.0, min(1.0, value)), text=message)
-        status.caption(message)
+    progress = st.progress(0, text="Saving upload…")
+    status = st.status("Preparing recording", expanded=True)
 
     try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-            original_path = Path(tmp.name)
+        with source_path.open("wb") as out:
             uploaded.seek(0)
-            shutil.copyfileobj(uploaded, tmp, length=1024 * 1024)
+            shutil.copyfileobj(uploaded, out, length=1024 * 1024)
 
-        set_progress(0.03, "Extracting and optimizing audio…")
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as audio_tmp:
-            audio_path = Path(audio_tmp.name)
+        progress.progress(4, text="Compressing speech audio…")
+        status.write("Extracting the audio track and splitting it into lightweight chunks.")
 
-        prepare_audio(str(original_path), str(audio_path))
-        try:
-            original_path.unlink(missing_ok=True)
-            original_path = None
-        except Exception:
-            pass
+        chunks = split_to_audio_chunks(
+            input_path=str(source_path),
+            output_dir=str(work_dir),
+            segment_seconds=1200,
+            bitrate="32k",
+        )
+        if not chunks:
+            raise RuntimeError("No usable audio track was found in this file.")
 
-        duration = probe_duration(str(audio_path))
-        selected_model = choose_model(mode, duration)
+        source_path.unlink(missing_ok=True)
 
-        set_progress(
-            0.07,
-            f"Audio ready ({format_seconds(duration)}). "
-            f"Loading {selected_model.title()} model…",
+        total_duration = sum(chunk["duration"] for chunk in chunks)
+        status.write(
+            f"Prepared {len(chunks)} chunk{'s' if len(chunks) != 1 else ''} "
+            f"covering {format_seconds(total_duration)}."
         )
 
-        def on_transcription_progress(value: float, message: str):
-            # Reserve first 8% for upload/audio preparation.
-            mapped = 0.08 + (0.91 * value)
-            set_progress(mapped, message)
+        model = TRANSLATION_MODEL if translate else TRANSCRIPTION_MODEL
 
-        result = transcribe_file(
-            str(audio_path),
-            model_id=selected_model,
+        def api_progress(done: int, total: int, message: str):
+            pct = 8 + int((done / max(1, total)) * 90)
+            progress.progress(min(98, pct), text=message)
+            status.write(message)
+
+        result = transcribe_chunks(
+            chunks=chunks,
+            api_key=api_key,
             language=language_map[language_label],
-            task=task,
-            progress_callback=on_transcription_progress,
+            translate=translate,
+            model=model,
+            progress_callback=api_progress,
         )
+
         result["source_name"] = uploaded.name
-        result["duration"] = duration or result.get("duration", 0.0)
+        result["duration"] = total_duration
         st.session_state["result"] = result
 
-        progress.progress(1.0, text="Transcription complete")
-        status.empty()
+        progress.progress(100, text="Transcription complete")
+        status.update(label="Transcription complete", state="complete", expanded=False)
+
     except Exception as exc:
-        st.error("The transcription could not finish.")
-        st.exception(exc)
+        status.update(label="Transcription failed", state="error", expanded=True)
+        st.error(str(exc))
         st.info(
-            "If this was a very long recording, retry with **Fastest** mode. "
-            "The app is already restricted to one CPU thread to avoid Community Cloud throttling."
+            "If this is an API/rate-limit message, wait briefly and retry. "
+            "If it mentions the API key, check that the key begins with `gsk_`."
         )
     finally:
-        for path in (original_path, audio_path):
-            if path:
-                try:
-                    Path(path).unlink(missing_ok=True)
-                except Exception:
-                    pass
+        shutil.rmtree(work_dir, ignore_errors=True)
 
 result = st.session_state.get("result")
 if not result:
     st.stop()
 
-segments = result["segments"]
-detected_language = str(result.get("language", "unknown"))
+segments = result.get("segments", [])
+plain_text = result.get("text", "").strip()
 duration = float(result.get("duration", 0.0))
-model_id = result.get("model", "unknown")
-source_name = result.get("source_name", st.session_state.get("source_name", "recording"))
+source_name = result.get("source_name", uploaded.name)
 
 st.success(
-    f"Transcription complete · {format_seconds(duration)} · "
-    f"language: {detected_language.upper()} · model: {model_id}"
-)
-
-plain_text = "\n".join(
-    seg["text"].strip() for seg in segments if seg["text"].strip()
+    f"Done · {format_seconds(duration)} · {len(segments)} timestamped segments"
 )
 
 if timestamps:
     txt_text = "\n".join(
-        f"[{format_seconds(seg['start'])} → {format_seconds(seg['end'])}] "
-        f"{seg['text'].strip()}"
-        for seg in segments
-        if seg["text"].strip()
+        f"[{format_seconds(seg['start'])} → {format_seconds(seg['end'])}] {seg['text'].strip()}"
+        for seg in segments if seg.get("text", "").strip()
     )
 else:
     txt_text = plain_text
@@ -227,56 +206,44 @@ else:
 srt_text = transcript_to_srt(segments)
 stem = Path(source_name).stem
 
-tab1, tab2, tab3 = st.tabs(["Transcript", "Quick summary", "Downloads"])
+tab1, tab2, tab3 = st.tabs(["Transcript", "Summary", "Downloads"])
 
 with tab1:
-    st.text_area(
-        "Transcript",
-        value=txt_text,
-        height=520,
-        label_visibility="collapsed",
-    )
+    st.text_area("Transcript", txt_text, height=520, label_visibility="collapsed")
 
 with tab2:
-    summary_length = st.slider(
-        "Summary length",
-        min_value=3,
-        max_value=20,
-        value=8,
-    )
+    summary_length = st.slider("Summary length", 3, 20, 8)
     summary = extractive_summary(plain_text, max_sentences=summary_length)
     if summary:
         st.markdown(summary)
-        st.caption(
-            "Free extractive summary — no external LLM/API call is made."
-        )
+        st.caption("This summary is generated locally from the transcript, with no extra AI API call.")
     else:
-        st.info("Not enough transcript text to create a summary.")
+        st.info("Not enough transcript text to summarize.")
 
 with tab3:
     summary = extractive_summary(plain_text, max_sentences=8)
     st.download_button(
-        "⬇️ Transcript (.txt)",
-        data=txt_text.encode("utf-8"),
-        file_name=f"{stem}_transcript.txt",
-        mime="text/plain",
+        "Download transcript (.txt)",
+        txt_text.encode("utf-8"),
+        f"{stem}_transcript.txt",
+        "text/plain",
         use_container_width=True,
     )
     st.download_button(
-        "⬇️ Subtitles (.srt)",
-        data=srt_text.encode("utf-8"),
-        file_name=f"{stem}_transcript.srt",
-        mime="application/x-subrip",
+        "Download subtitles (.srt)",
+        srt_text.encode("utf-8"),
+        f"{stem}_transcript.srt",
+        "application/x-subrip",
         use_container_width=True,
     )
     st.download_button(
-        "⬇️ Quick summary (.txt)",
-        data=summary.encode("utf-8"),
-        file_name=f"{stem}_summary.txt",
-        mime="text/plain",
+        "Download summary (.txt)",
+        summary.encode("utf-8"),
+        f"{stem}_summary.txt",
+        "text/plain",
         use_container_width=True,
     )
 
 st.caption(
-    "Uploaded media is used temporarily for processing and the app deletes its temporary files afterwards."
+    "For confidential recordings, prefer running a local/offline transcription tool on your own computer."
 )

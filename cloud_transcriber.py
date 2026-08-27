@@ -1,155 +1,126 @@
 from __future__ import annotations
 
-import base64
 import mimetypes
 import time
 from pathlib import Path
-from typing import BinaryIO, Optional
+from typing import Callable, Optional
 
 import requests
 
-TRANSCRIPTION_MODEL = "whisper-large-v3-turbo"
-TRANSLATION_MODEL = "whisper-large-v3"
-BASE_URL = "https://api.groq.com/openai/v1/audio"
-DIRECT_UPLOAD_LIMIT = 24 * 1024 * 1024  # stay safely below Groq free-tier 25 MB attachment cap
+MODEL = "whisper-large-v3-turbo"
+BASE_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 
 
-def _mime_type(filename: str, supplied: Optional[str] = None) -> str:
-    if supplied and supplied != "application/octet-stream":
-        return supplied
-    guessed, _ = mimetypes.guess_type(filename)
-    return guessed or "application/octet-stream"
+def _transcribe_one(path: str, api_key: str, language: Optional[str]) -> dict:
+    headers = {"Authorization": f"Bearer {api_key}"}
+    data = {
+        "model": MODEL,
+        "response_format": "verbose_json",
+        "temperature": "0",
+    }
+    if language:
+        data["language"] = language
 
+    mime = mimetypes.guess_type(path)[0] or "application/octet-stream"
 
-def _request_with_retry(method, url: str, *, headers: dict, timeout=(30, 600), **kwargs):
-    last_error = None
     for attempt in range(4):
         try:
-            response = method(url, headers=headers, timeout=timeout, **kwargs)
+            with open(path, "rb") as audio:
+                response = requests.post(
+                    BASE_URL,
+                    headers=headers,
+                    data=data,
+                    files={"file": (Path(path).name, audio, mime)},
+                    timeout=(30, 600),
+                )
         except requests.RequestException as exc:
-            last_error = exc
             if attempt == 3:
                 raise RuntimeError(f"Network error while contacting Groq: {exc}") from exc
             time.sleep(2 ** attempt)
             continue
 
         if response.status_code == 429 and attempt < 3:
-            wait = response.headers.get("retry-after")
+            retry_after = response.headers.get("retry-after")
             try:
-                delay = max(1.0, min(30.0, float(wait))) if wait else 2 ** attempt
-            except (TypeError, ValueError):
-                delay = 2 ** attempt
-            time.sleep(delay)
+                wait = float(retry_after) if retry_after else 2 ** attempt
+            except ValueError:
+                wait = 2 ** attempt
+            time.sleep(max(1.0, min(30.0, wait)))
             continue
 
-        return response
+        if not response.ok:
+            try:
+                detail = response.json()
+            except Exception:
+                detail = response.text[-1000:]
+            raise RuntimeError(f"Groq returned HTTP {response.status_code}: {detail}")
 
-    raise RuntimeError(f"Could not contact Groq: {last_error}")
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise RuntimeError("Groq returned an unreadable response.") from exc
+
+    raise RuntimeError("Groq could not complete the transcription request.")
 
 
-def transcribe_upload(
-    uploaded_file: BinaryIO,
-    filename: str,
-    size_bytes: int,
+def transcribe_chunks(
+    chunks: list[dict],
     api_key: str,
     language: Optional[str] = None,
-    translate: bool = False,
-    content_type: Optional[str] = None,
+    progress_callback: Optional[Callable[[int, int, str], None]] = None,
 ) -> dict:
-    """Transcribe without local decoding/transcoding.
-
-    Files below Groq's attachment limit are streamed as multipart uploads.
-    Larger files are sent through Groq's documented URL field as a Base64 data URL,
-    avoiding FFmpeg and CPU-heavy preprocessing on Streamlit Community Cloud.
-    """
     if not api_key:
         raise ValueError("A Groq API key is required.")
 
-    endpoint = "translations" if translate else "transcriptions"
-    model = TRANSLATION_MODEL if translate else TRANSCRIPTION_MODEL
-    url = f"{BASE_URL}/{endpoint}"
-    headers = {"Authorization": f"Bearer {api_key}"}
+    all_segments = []
+    text_parts = []
+    total = len(chunks)
 
-    common = {
-        "model": model,
-        "response_format": "verbose_json",
-        "temperature": 0,
-    }
-    if language and not translate:
-        common["language"] = language
+    for i, chunk in enumerate(chunks, start=1):
+        if progress_callback:
+            progress_callback(i - 1, total, f"Transcribing part {i} of {total}…")
 
-    mime = _mime_type(filename, content_type)
-    uploaded_file.seek(0)
-
-    if size_bytes <= DIRECT_UPLOAD_LIMIT:
-        files = {"file": (Path(filename).name, uploaded_file, mime)}
-        form = {key: str(value) for key, value in common.items()}
-        response = _request_with_retry(
-            requests.post,
-            url,
-            headers=headers,
-            data=form,
-            files=files,
-        )
-        transfer_mode = "direct"
-    else:
-        # Groq documents the `url` parameter for files over the attachment limit
-        # and supports Base64URL. A data URL keeps the file private and avoids
-        # hosting it elsewhere just to obtain a public URL.
-        raw = uploaded_file.read()
-        encoded = base64.b64encode(raw).decode("ascii")
-        data_url = f"data:{mime};base64,{encoded}"
-        payload = dict(common)
-        payload["url"] = data_url
-        response = _request_with_retry(
-            requests.post,
-            url,
-            headers={**headers, "Content-Type": "application/json"},
-            json=payload,
-        )
-        transfer_mode = "base64-url"
-        del raw, encoded, data_url, payload
-
-    if not response.ok:
-        try:
-            detail = response.json()
-        except Exception:
-            detail = response.text[-1500:]
-        raise RuntimeError(
-            f"Groq returned HTTP {response.status_code}: {detail}"
+        payload = _transcribe_one(
+            path=chunk["path"],
+            api_key=api_key,
+            language=language,
         )
 
-    try:
-        payload = response.json()
-    except ValueError as exc:
-        raise RuntimeError("Groq returned an unreadable transcription response.") from exc
+        text = str(payload.get("text", "") or "").strip()
+        if text:
+            text_parts.append(text)
 
-    text = str(payload.get("text", "") or "").strip()
-    segments = []
-    for seg in payload.get("segments") or []:
-        seg_text = str(seg.get("text", "") or "").strip()
-        if not seg_text:
-            continue
-        segments.append(
-            {
-                "start": float(seg.get("start", 0.0) or 0.0),
-                "end": float(seg.get("end", 0.0) or 0.0),
-                "text": seg_text,
-            }
-        )
+        offset = float(chunk.get("offset", 0.0))
+        raw_segments = payload.get("segments") or []
 
-    duration = float(payload.get("duration", 0.0) or 0.0)
-    if duration <= 0 and segments:
-        duration = max(seg["end"] for seg in segments)
+        if raw_segments:
+            for seg in raw_segments:
+                seg_text = str(seg.get("text", "") or "").strip()
+                if not seg_text:
+                    continue
+                all_segments.append({
+                    "start": offset + float(seg.get("start", 0.0) or 0.0),
+                    "end": offset + float(seg.get("end", 0.0) or 0.0),
+                    "text": seg_text,
+                })
+        elif text:
+            all_segments.append({
+                "start": offset,
+                "end": offset + float(chunk.get("duration", 0.0)),
+                "text": text,
+            })
 
-    if not segments and text:
-        segments = [{"start": 0.0, "end": duration, "text": text}]
+        if progress_callback:
+            progress_callback(i, total, f"Finished part {i} of {total}.")
+
+    duration = 0.0
+    if chunks:
+        last = chunks[-1]
+        duration = float(last.get("offset", 0.0)) + float(last.get("duration", 0.0))
 
     return {
-        "text": text,
-        "segments": segments,
+        "text": "\n".join(text_parts).strip(),
+        "segments": all_segments,
         "duration": duration,
-        "model": model,
-        "translation": translate,
-        "transfer_mode": transfer_mode,
+        "model": MODEL,
     }

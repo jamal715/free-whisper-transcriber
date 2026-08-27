@@ -1,74 +1,103 @@
 from __future__ import annotations
 
+import os
 from typing import Callable, Optional
+
+# Prevent BLAS/OpenMP libraries from spawning extra workers on free cloud CPU.
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
+os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "1")
 
 import streamlit as st
 from faster_whisper import WhisperModel
 
 
 MODEL_OPTIONS = {
-    "Tiny — fastest": "tiny",
-    "Base — recommended": "base",
-    "Small — more accurate": "small",
+    "Smart — recommended": "auto",
+    "Fastest — long recordings": "tiny",
+    "Balanced — better accuracy": "base",
 }
 
 
-@st.cache_resource(show_spinner=False)
+def choose_model(mode_name: str, duration_seconds: float) -> str:
+    selected = MODEL_OPTIONS.get(mode_name, "auto")
+    if selected != "auto":
+        return selected
+
+    # Streamlit Community Cloud: prefer tiny for long recordings to stay
+    # within shared CPU/RAM constraints; use base for shorter clips.
+    if duration_seconds >= 20 * 60:
+        return "tiny"
+    return "base"
+
+
+@st.cache_resource(show_spinner=False, max_entries=1)
 def load_model(model_id: str) -> WhisperModel:
     return WhisperModel(
         model_id,
         device="cpu",
         compute_type="int8",
+        cpu_threads=1,
+        num_workers=1,
     )
 
 
 def transcribe_file(
     file_path: str,
-    model_name: str = "Base — recommended",
+    model_id: str,
     language: Optional[str] = None,
     task: str = "transcribe",
     progress_callback: Optional[Callable[[float, str], None]] = None,
 ) -> dict:
-    model_id = MODEL_OPTIONS[model_name]
-
     if progress_callback:
-        progress_callback(0.02, f"Loading Whisper {model_id} model…")
+        progress_callback(0.01, f"Loading Whisper {model_id}…")
 
     model = load_model(model_id)
 
     if progress_callback:
-        progress_callback(0.06, "Analyzing recording…")
+        progress_callback(0.03, "Detecting speech and language…")
 
     segments_iter, info = model.transcribe(
         file_path,
         language=language,
         task=task,
-        beam_size=5,
+        beam_size=1,
+        best_of=1,
+        temperature=0.0,
         vad_filter=True,
-        vad_parameters=dict(min_silence_duration_ms=500),
-        condition_on_previous_text=True,
+        vad_parameters={
+            "min_silence_duration_ms": 500,
+            "speech_pad_ms": 200,
+        },
+        condition_on_previous_text=False,
+        word_timestamps=False,
     )
 
     duration = float(getattr(info, "duration", 0.0) or 0.0)
     segments = []
 
     for seg in segments_iter:
-        segments.append(
-            {
-                "start": float(seg.start),
-                "end": float(seg.end),
-                "text": seg.text,
-            }
-        )
+        text = (seg.text or "").strip()
+        if text:
+            segments.append(
+                {
+                    "start": float(seg.start),
+                    "end": float(seg.end),
+                    "text": text,
+                }
+            )
 
         if progress_callback:
             if duration > 0:
-                ratio = min(0.98, 0.06 + 0.92 * (float(seg.end) / duration))
+                ratio = min(0.99, max(0.04, float(seg.end) / duration))
             else:
                 ratio = 0.5
             progress_callback(
                 ratio,
-                f"Transcribing… {format_seconds_short(float(seg.end))}",
+                f"Transcribing… {format_seconds_short(float(seg.end))}"
+                + (f" / {format_seconds_short(duration)}" if duration else ""),
             )
 
     return {

@@ -3,6 +3,14 @@ from __future__ import annotations
 from pathlib import Path
 import subprocess
 
+import imageio_ffmpeg
+from mutagen import File as MutagenFile
+
+
+def _ffmpeg_exe() -> str:
+    """Return a bundled FFmpeg executable supplied by imageio-ffmpeg."""
+    return imageio_ffmpeg.get_ffmpeg_exe()
+
 
 def _run(command: list[str], timeout: int = 900) -> subprocess.CompletedProcess:
     proc = subprocess.run(
@@ -22,18 +30,13 @@ def _run(command: list[str], timeout: int = 900) -> subprocess.CompletedProcess:
 
 
 def probe_duration(path: str) -> float:
-    proc = _run(
-        [
-            "ffprobe", "-v", "error",
-            "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1",
-            path,
-        ],
-        timeout=60,
-    )
+    """Read media duration without requiring a separate ffprobe binary."""
     try:
-        return max(0.0, float((proc.stdout or "0").strip()))
-    except ValueError:
+        media = MutagenFile(path)
+        info = getattr(media, "info", None)
+        length = getattr(info, "length", 0.0)
+        return max(0.0, float(length or 0.0))
+    except Exception:
         return 0.0
 
 
@@ -44,11 +47,12 @@ def split_to_audio_chunks(
     bitrate: str = "32k",
 ) -> list[dict]:
     out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
     pattern = str(out_dir / "chunk_%03d.mp3")
 
     _run(
         [
-            "ffmpeg",
+            _ffmpeg_exe(),
             "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
             "-threads", "1",
             "-i", input_path,
@@ -68,15 +72,23 @@ def split_to_audio_chunks(
     paths = sorted(out_dir.glob("chunk_*.mp3"))
     chunks = []
     offset = 0.0
-    for path in paths:
+
+    for index, path in enumerate(paths):
         duration = probe_duration(str(path))
         if duration <= 0:
-            continue
-        chunks.append({
-            "path": str(path),
-            "duration": duration,
-            "offset": offset,
-        })
+            # All but the last segment are fixed-length by construction.
+            duration = float(segment_seconds)
+
+        chunks.append(
+            {
+                "path": str(path),
+                "duration": duration,
+                "offset": offset,
+            }
+        )
         offset += duration
+
+    if not chunks:
+        raise RuntimeError("No audio chunks were produced from this recording.")
 
     return chunks

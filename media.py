@@ -10,13 +10,10 @@ from mutagen import File as MutagenFile
 
 MAX_CHUNK_BYTES = 19 * 1024 * 1024
 TARGET_CHUNK_BYTES = 16 * 1024 * 1024
-DEFAULT_OVERLAP_SECONDS = 2.0
+DEFAULT_OVERLAP_SECONDS = 1.0
 FREE_TIER_AUDIO_BUDGET_SECONDS = 7190.0
-# Whisper Large V3 is substantially more reliable on shorter windows.  Three
-# minutes is a practical research compromise: much shorter than our old 6–10
-# minute pieces, but still few enough requests for Groq's free-tier RPM limit.
-ACCURACY_MAX_SEGMENT_SECONDS = 180
-MIN_SEGMENT_SECONDS = 45
+ACCURACY_SEGMENT_SECONDS = 60
+MIN_SEGMENT_SECONDS = 30
 
 SUPPORTED_OUTPUT_EXTENSIONS = {
     ".m4a": ".m4a",
@@ -100,8 +97,8 @@ def _build_chunks(
         nominal_end = min(source_duration, float((i + 1) * segment_seconds))
         chunk_start = max(0.0, nominal_start - (overlap_seconds if i else 0.0))
         chunk_end = nominal_end
-
         path = output_dir / f"chunk_{i:03d}{output_ext}"
+
         _extract_window(
             input_path=input_path,
             output_path=str(path),
@@ -129,19 +126,12 @@ def split_audio_lossless(input_path: str, output_dir: str) -> list[dict]:
     source = Path(input_path)
     size_bytes = source.stat().st_size
     duration = probe_duration(str(source))
-
     if duration <= 0:
-        raise RuntimeError("Could not read the recording duration. Please use M4A or MP3 for large files.")
+        raise RuntimeError("Could not read the recording duration. Please use M4A or MP3 for long files.")
 
     output_ext = SUPPORTED_OUTPUT_EXTENSIONS.get(source.suffix.lower(), ".m4a")
-
-    # Size-derived limit keeps every request comfortably below the provider file
-    # cap.  The time cap is deliberately stricter for research accuracy.
     size_based_seconds = int(duration * (TARGET_CHUNK_BYTES / max(1, size_bytes)))
-    segment_seconds = max(
-        MIN_SEGMENT_SECONDS,
-        min(ACCURACY_MAX_SEGMENT_SECONDS, size_based_seconds),
-    )
+    segment_seconds = max(MIN_SEGMENT_SECONDS, min(ACCURACY_SEGMENT_SECONDS, size_based_seconds))
     out_dir = Path(output_dir)
 
     for _ in range(6):

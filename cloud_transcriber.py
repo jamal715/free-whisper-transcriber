@@ -19,12 +19,7 @@ COMPRESSION_REVIEW_THRESHOLD = 2.4
 
 
 def _compact_prompt(context: str) -> str:
-    """Return only researcher-supplied names/terms.
-
-    We deliberately do not carry the previous transcript into the next audio
-    window. Previous-text prompting can encourage continuation hallucinations
-    when the following window is quiet or badly recorded.
-    """
+    """Use only researcher-supplied names/terms; never previous transcript text."""
     return (context or "").strip()[:500]
 
 
@@ -155,6 +150,18 @@ def _merge_payload(*, payload: dict, offset: float, keep_after: float, all_segme
     return merged
 
 
+def _looks_like_quota_error(message: str | None) -> bool:
+    m = (message or "").lower()
+    return (
+        "http 429" in m
+        or "rate_limit" in m
+        or "rate limit" in m
+        or "audio seconds" in m
+        or "tokens per" in m
+        or "requests per" in m
+    )
+
+
 def transcribe_chunks(
     *,
     chunks: list[dict],
@@ -175,6 +182,8 @@ def transcribe_chunks(
     total = len(chunks)
     primary_failures = 0
     last_request_started = 0.0
+    stopped_reason = None
+    completed_audio_end = 0.0
 
     for i, chunk in enumerate(chunks, start=1):
         if progress_callback:
@@ -221,6 +230,18 @@ def transcribe_chunks(
                 "avg_logprob": None,
                 "error": primary_error,
             }
+            chunk_results.append(chunk_result)
+            if chunk_callback:
+                chunk_callback(chunk_result)
+
+            if _looks_like_quota_error(primary_error):
+                stopped_reason = (
+                    f"Free speech quota/rate limit reached near {int(base_result['keep_after'] // 60)} minute(s). "
+                    "Completed transcript windows were preserved; retry later for the remaining audio."
+                )
+                if progress_callback:
+                    progress_callback(i, total, "Free-tier quota reached; stopping cleanly instead of marking the remaining audio as failed.")
+                break
         else:
             before = len(all_segments)
             text = _merge_payload(
@@ -241,23 +262,27 @@ def transcribe_chunks(
                 "error": None,
                 **stats,
             }
+            chunk_results.append(chunk_result)
+            completed_audio_end = max(completed_audio_end, nominal_end)
+            if chunk_callback:
+                chunk_callback(chunk_result)
 
-        chunk_results.append(chunk_result)
-        if chunk_callback:
-            chunk_callback(chunk_result)
         if progress_callback:
             progress_callback(i, total, f"Minute {i} of {total} complete.")
 
-    duration = max((float(c.get("nominal_end", 0.0) or 0.0) for c in chunks), default=0.0)
+    full_duration = max((float(c.get("nominal_end", 0.0) or 0.0) for c in chunks), default=0.0)
     return {
         "text": "\n".join(text_parts).strip(),
         "segments": all_segments,
-        "duration": duration,
+        "duration": full_duration,
+        "completed_audio_end": completed_audio_end,
         "model": model,
         "parts": total,
+        "processed_parts": len(chunk_results),
         "languages": languages,
         "chunk_results": chunk_results,
         "primary_failures": primary_failures,
+        "stopped_reason": stopped_reason,
     }
 
 

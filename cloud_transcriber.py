@@ -18,15 +18,14 @@ NO_SPEECH_REVIEW_THRESHOLD = 0.6
 COMPRESSION_REVIEW_THRESHOLD = 2.4
 
 
-def _compact_prompt(context: str, previous_tail: str = "") -> str:
-    parts = []
-    context = (context or "").strip()
-    previous_tail = (previous_tail or "").strip()
-    if context:
-        parts.append(context[:500])
-    if previous_tail:
-        parts.append(previous_tail[-240:])
-    return "\n".join(parts)[:720]
+def _compact_prompt(context: str) -> str:
+    """Return only researcher-supplied names/terms.
+
+    We deliberately do not carry the previous transcript into the next audio
+    window. Previous-text prompting can encourage continuation hallucinations
+    when the following window is quiet or badly recorded.
+    """
+    return (context or "").strip()[:500]
 
 
 def _post_audio(*, path: str, api_key: str, endpoint: str, model: str, language: Optional[str] = None, prompt: str = "") -> dict:
@@ -174,7 +173,6 @@ def transcribe_chunks(
     languages: list[str] = []
     chunk_results: list[dict] = []
     total = len(chunks)
-    previous_tail = ""
     primary_failures = 0
     last_request_started = 0.0
 
@@ -196,7 +194,7 @@ def transcribe_chunks(
                 endpoint=TRANSCRIPTION_URL,
                 model=model,
                 language=language,
-                prompt=_compact_prompt(context_prompt, previous_tail),
+                prompt=_compact_prompt(context_prompt),
             )
         except Exception as exc:
             primary_error = str(exc)
@@ -243,8 +241,6 @@ def transcribe_chunks(
                 "error": None,
                 **stats,
             }
-            if text:
-                previous_tail = text[-260:]
 
         chunk_results.append(chunk_result)
         if chunk_callback:

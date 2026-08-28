@@ -87,9 +87,14 @@ def assess_single(
     api_error: str | None = None,
     avg_no_speech_prob: float | None = None,
     max_no_speech_prob: float | None = None,
+    avg_logprob: float | None = None,
     segment_count: int = 0,
 ) -> dict:
-    """Classify one Groq result without confusing silence with failure."""
+    """Classify one ASR window conservatively.
+
+    Research priority is precision over recall: suspicious low-confidence speech is
+    withheld rather than presented as a plausible quotation.
+    """
     if api_error:
         return {
             "score": 0,
@@ -102,16 +107,15 @@ def assess_single(
     clean = (text or "").strip()
     avg_ns = float(avg_no_speech_prob) if isinstance(avg_no_speech_prob, (int, float)) else None
     max_ns = float(max_no_speech_prob) if isinstance(max_no_speech_prob, (int, float)) else None
+    avg_lp = float(avg_logprob) if isinstance(avg_logprob, (int, float)) else None
 
-    likely_silence = (
-        not clean
-        and (
-            segment_count == 0
-            or (avg_ns is not None and avg_ns >= 0.55)
-            or (max_ns is not None and max_ns >= 0.80)
-        )
-    )
-    if likely_silence:
+    # Empty output from a successful request is treated as silence/no confident
+    # speech, not as a transcription failure.
+    if not clean and (
+        segment_count == 0
+        or (avg_ns is not None and avg_ns >= 0.50)
+        or (max_ns is not None and max_ns >= 0.80)
+    ):
         return {
             "score": None,
             "status": "silence",
@@ -120,23 +124,52 @@ def assess_single(
             "selected_text": "",
         }
 
+    # Whisper can hallucinate fluent text over silence/background noise. If the
+    # model itself reports strong no-speech evidence plus weak token confidence,
+    # deliberately discard the words instead of exposing them as a transcript.
+    strong_no_speech = (
+        (avg_ns is not None and avg_ns >= 0.72)
+        or (max_ns is not None and max_ns >= 0.94)
+    )
+    weak_tokens = avg_lp is None or avg_lp <= -0.95
+    if clean and strong_no_speech and weak_tokens:
+        return {
+            "score": 45,
+            "status": "review",
+            "reasons": ["low-confidence audio; text withheld to avoid hallucination"],
+            "selected_provider": "Groq Whisper Large V3",
+            "selected_text": "",
+        }
+
     result = inspect_text(clean)
+
+    # Low token confidence is a review signal even when the characters look
+    # normal. We retain plausible wording for the researcher to inspect, but do
+    # not label it high confidence.
+    if avg_lp is not None and avg_lp < -1.15 and result["status"] == "passed":
+        result["status"] = "review"
+        result["score"] = min(int(result["score"]), 72)
+        result["reasons"] = list(result["reasons"]) + ["low speech confidence"]
+
+    # Never allow obviously corrupted output into downstream translation or
+    # summaries. The raw transcript remains downloadable separately.
+    selected_text = clean if result["status"] != "failed" else ""
     result.update({
         "selected_provider": "Groq Whisper Large V3",
-        "selected_text": clean,
+        "selected_text": selected_text,
     })
     return result
 
 
 def assess_dual(groq_text: str, verifier_text: str | None) -> dict:
-    # Kept for backwards compatibility; free production mode uses assess_single.
+    # Backwards compatibility for older app versions.
     primary = inspect_text(groq_text)
     return {
         **primary,
         "similarity": None,
         "dual_verified": False,
         "selected_provider": "Groq Whisper Large V3",
-        "selected_text": groq_text,
+        "selected_text": groq_text if primary["status"] != "failed" else "",
     }
 
 

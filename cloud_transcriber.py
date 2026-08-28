@@ -42,6 +42,7 @@ def _post_audio(
         "model": model,
         "response_format": "verbose_json",
         "temperature": "0",
+        "timestamp_granularities[]": "segment",
     }
     if language and endpoint == TRANSCRIPTION_URL:
         data["language"] = language
@@ -50,7 +51,7 @@ def _post_audio(
 
     mime = mimetypes.guess_type(path)[0] or "application/octet-stream"
 
-    for attempt in range(5):
+    for attempt in range(6):
         try:
             with open(path, "rb") as audio:
                 response = requests.post(
@@ -61,18 +62,18 @@ def _post_audio(
                     timeout=(30, 900),
                 )
         except requests.RequestException as exc:
-            if attempt == 4:
+            if attempt == 5:
                 raise RuntimeError(f"Network error while contacting Groq: {exc}") from exc
-            time.sleep(min(16, 2 ** attempt))
+            time.sleep(min(20, 2 ** attempt))
             continue
 
-        if response.status_code in {408, 409, 429, 500, 502, 503, 504} and attempt < 4:
+        if response.status_code in {408, 409, 429, 500, 502, 503, 504} and attempt < 5:
             retry_after = response.headers.get("retry-after")
             try:
                 wait = float(retry_after) if retry_after else 2 ** attempt
             except (TypeError, ValueError):
                 wait = 2 ** attempt
-            time.sleep(max(1.0, min(30.0, wait)))
+            time.sleep(max(1.0, min(45.0, wait)))
             continue
 
         if not response.ok:
@@ -111,28 +112,37 @@ def _merge_payload(
     *,
     payload: dict,
     offset: float,
+    keep_after: float,
     all_segments: list[dict],
     text_parts: list[str],
     languages: list[str],
 ) -> str:
-    text = str(payload.get("text", "") or "").strip()
-    if text:
-        text_parts.append(text)
-
     language = str(payload.get("language", "") or "").strip()
     if language:
         languages.append(language)
 
     raw_segments = payload.get("segments") or []
+    kept_text: list[str] = []
+
     if raw_segments:
         for seg in raw_segments:
             seg_text = str(seg.get("text", "") or "").strip()
             if not seg_text:
                 continue
+
+            global_start = offset + float(seg.get("start", 0.0) or 0.0)
+            global_end = offset + float(seg.get("end", 0.0) or 0.0)
+            midpoint = (global_start + global_end) / 2.0
+
+            # Large-file chunks overlap slightly. Keep the overlap for model context,
+            # but drop duplicate segments when stitching the transcript back together.
+            if midpoint < keep_after - 0.05:
+                continue
+
             review_flag, review_reasons = _review_metadata(seg)
             all_segments.append({
-                "start": offset + float(seg.get("start", 0.0) or 0.0),
-                "end": offset + float(seg.get("end", 0.0) or 0.0),
+                "start": global_start,
+                "end": global_end,
                 "text": seg_text,
                 "review_flag": review_flag,
                 "review_reasons": review_reasons,
@@ -140,16 +150,23 @@ def _merge_payload(
                 "no_speech_prob": seg.get("no_speech_prob"),
                 "compression_ratio": seg.get("compression_ratio"),
             })
-    elif text:
-        all_segments.append({
-            "start": offset,
-            "end": offset + float(payload.get("duration", 0.0) or 0.0),
-            "text": text,
-            "review_flag": False,
-            "review_reasons": [],
-        })
+            kept_text.append(seg_text)
+    else:
+        text = str(payload.get("text", "") or "").strip()
+        if text:
+            all_segments.append({
+                "start": max(offset, keep_after),
+                "end": offset + float(payload.get("duration", 0.0) or 0.0),
+                "text": text,
+                "review_flag": False,
+                "review_reasons": [],
+            })
+            kept_text.append(text)
 
-    return text
+    merged = " ".join(kept_text).strip()
+    if merged:
+        text_parts.append(merged)
+    return merged
 
 
 def transcribe_chunks(
@@ -186,6 +203,7 @@ def transcribe_chunks(
         text = _merge_payload(
             payload=payload,
             offset=float(chunk.get("offset", 0.0)),
+            keep_after=float(chunk.get("keep_after", chunk.get("offset", 0.0))),
             all_segments=all_segments,
             text_parts=text_parts,
             languages=languages,
@@ -198,8 +216,10 @@ def transcribe_chunks(
 
     duration = 0.0
     if chunks:
-        last = chunks[-1]
-        duration = float(last.get("offset", 0.0)) + float(last.get("duration", 0.0))
+        duration = max(float(chunk.get("nominal_end", 0.0) or 0.0) for chunk in chunks)
+        if duration <= 0:
+            last = chunks[-1]
+            duration = float(last.get("offset", 0.0)) + float(last.get("duration", 0.0))
 
     return {
         "text": "\n".join(text_parts).strip(),
@@ -242,6 +262,7 @@ def translate_chunks(
         text = _merge_payload(
             payload=payload,
             offset=float(chunk.get("offset", 0.0)),
+            keep_after=float(chunk.get("keep_after", chunk.get("offset", 0.0))),
             all_segments=all_segments,
             text_parts=text_parts,
             languages=languages,
@@ -254,8 +275,10 @@ def translate_chunks(
 
     duration = 0.0
     if chunks:
-        last = chunks[-1]
-        duration = float(last.get("offset", 0.0)) + float(last.get("duration", 0.0))
+        duration = max(float(chunk.get("nominal_end", 0.0) or 0.0) for chunk in chunks)
+        if duration <= 0:
+            last = chunks[-1]
+            duration = float(last.get("offset", 0.0)) + float(last.get("duration", 0.0))
 
     return {
         "text": "\n".join(text_parts).strip(),

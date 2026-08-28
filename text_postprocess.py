@@ -87,11 +87,15 @@ def translate_validated_chunks(
 
     for i, chunk in enumerate(validated_chunks, start=1):
         source = str(chunk.get("selected_text", "") or "").strip()
+        state = str(chunk.get("status", "review") or "review").lower()
         if progress_callback:
             progress_callback(i - 1, total, f"Translating validated part {i} of {total}…")
 
-        if not source:
-            translated = ""
+        if state == "failed":
+            # Never turn a corrupted ASR result into polished-looking English.
+            translated = "[REVIEW REQUIRED — source transcription failed validation; translation withheld.]"
+        elif not source:
+            translated = "[REVIEW REQUIRED — no reliable source transcript was available.]"
         else:
             translated = _chat(
                 api_key=api_key,
@@ -99,13 +103,15 @@ def translate_validated_chunks(
                 system=system,
                 user=source,
             )
+            if state == "review":
+                translated = "[VERIFY SOURCE AUDIO] " + translated
 
         out.append({
             "index": i,
             "start": float(chunk.get("start", 0.0) or 0.0),
             "end": float(chunk.get("end", 0.0) or 0.0),
             "text": translated,
-            "source_status": chunk.get("status"),
+            "source_status": state,
             "source_score": chunk.get("score"),
         })
         if progress_callback:
@@ -122,23 +128,31 @@ def build_research_summary(*, validated_chunks: list[dict], api_key: str) -> dic
     if not validated_chunks:
         return {"english": "", "roman_urdu": "", "model": SUMMARY_MODEL}
 
+    usable = [c for c in validated_chunks if str(c.get("status", "")).lower() != "failed"]
+    failed_count = len(validated_chunks) - len(usable)
+    if not usable:
+        return {
+            "english": "Summary withheld because all transcript sections failed validation.",
+            "roman_urdu": "Summary roki gayi hai kyun ke tamam transcript sections validation mein fail huay.",
+            "model": SUMMARY_MODEL,
+        }
+
     chunk_notes = []
     system_notes = (
-        "You are summarizing one part of a research interview. Extract only substantive claims, "
+        "You are summarizing one VALIDATED part of a research interview. Extract only substantive claims, "
         "decisions, examples, numbers, institutions, disagreements, and unresolved questions. "
         "Do not infer beyond the transcript. Return 3-7 concise English bullets."
     )
 
-    for chunk in validated_chunks:
+    for chunk in usable:
         text = str(chunk.get("selected_text", "") or "").strip()
         if not text:
             continue
-        text = text[:12000]
         note = _chat(
             api_key=api_key,
             model=SUMMARY_MODEL,
             system=system_notes,
-            user=text,
+            user=text[:12000],
         )
         chunk_notes.append(note)
 
@@ -146,8 +160,15 @@ def build_research_summary(*, validated_chunks: list[dict], api_key: str) -> dic
     if not combined:
         return {"english": "", "roman_urdu": "", "model": SUMMARY_MODEL}
 
+    caveat = ""
+    if failed_count:
+        caveat = (
+            f"IMPORTANT: {failed_count} transcript section(s) failed validation and were excluded. "
+            "State this limitation clearly in both summaries.\n\n"
+        )
+
     system_final = (
-        "You are producing a faithful research-interview summary from chunk-level notes. "
+        "You are producing a faithful research-interview summary from validated chunk-level notes. "
         "Do not add facts. First provide a concise English summary with clear bullets and, where useful, "
         "short section headings. Then provide a separate Roman Urdu summary conveying the same points "
         "in natural Pakistani Roman Urdu. Preserve names, numbers and institutions exactly. "
@@ -157,7 +178,7 @@ def build_research_summary(*, validated_chunks: list[dict], api_key: str) -> dic
         api_key=api_key,
         model=SUMMARY_MODEL,
         system=system_final,
-        user=combined[:50000],
+        user=(caveat + combined)[:50000],
     )
 
     english = final

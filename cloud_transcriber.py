@@ -28,15 +28,7 @@ def _compact_prompt(context: str, previous_tail: str = "") -> str:
     return "\n".join(parts)[:850]
 
 
-def _post_audio(
-    *,
-    path: str,
-    api_key: str,
-    endpoint: str,
-    model: str,
-    language: Optional[str] = None,
-    prompt: str = "",
-) -> dict:
+def _post_audio(*, path: str, api_key: str, endpoint: str, model: str, language: Optional[str] = None, prompt: str = "") -> dict:
     headers = {"Authorization": f"Bearer {api_key}"}
     data = {
         "model": model,
@@ -50,7 +42,6 @@ def _post_audio(
         data["prompt"] = prompt
 
     mime = mimetypes.guess_type(path)[0] or "application/octet-stream"
-
     for attempt in range(6):
         try:
             with open(path, "rb") as audio:
@@ -96,49 +87,32 @@ def _review_metadata(seg: dict) -> tuple[bool, list[str]]:
     avg_logprob = seg.get("avg_logprob")
     if isinstance(avg_logprob, (int, float)) and avg_logprob < LOGPROB_REVIEW_THRESHOLD:
         reasons.append("low average log probability")
-
     no_speech = seg.get("no_speech_prob")
     if isinstance(no_speech, (int, float)) and no_speech > NO_SPEECH_REVIEW_THRESHOLD:
         reasons.append("high no-speech probability")
-
     compression = seg.get("compression_ratio")
     if isinstance(compression, (int, float)) and compression > COMPRESSION_REVIEW_THRESHOLD:
         reasons.append("unusual compression ratio")
-
     return bool(reasons), reasons
 
 
-def _merge_payload(
-    *,
-    payload: dict,
-    offset: float,
-    keep_after: float,
-    all_segments: list[dict],
-    text_parts: list[str],
-    languages: list[str],
-) -> str:
+def _merge_payload(*, payload: dict, offset: float, keep_after: float, all_segments: list[dict], text_parts: list[str], languages: list[str]) -> str:
     language = str(payload.get("language", "") or "").strip()
     if language:
         languages.append(language)
 
     raw_segments = payload.get("segments") or []
     kept_text: list[str] = []
-
     if raw_segments:
         for seg in raw_segments:
             seg_text = str(seg.get("text", "") or "").strip()
             if not seg_text:
                 continue
-
             global_start = offset + float(seg.get("start", 0.0) or 0.0)
             global_end = offset + float(seg.get("end", 0.0) or 0.0)
             midpoint = (global_start + global_end) / 2.0
-
-            # Large-file chunks overlap slightly. Keep the overlap for model context,
-            # but drop duplicate segments when stitching the transcript back together.
             if midpoint < keep_after - 0.05:
                 continue
-
             review_flag, review_reasons = _review_metadata(seg)
             all_segments.append({
                 "start": global_start,
@@ -169,37 +143,25 @@ def _merge_payload(
     return merged
 
 
-def transcribe_chunks(
-    *,
-    chunks: list[dict],
-    api_key: str,
-    language: Optional[str] = None,
-    model: str = ACCURACY_MODEL,
-    context_prompt: str = "",
-    progress_callback: Optional[Callable[[int, int, str], None]] = None,
-) -> dict:
+def transcribe_chunks(*, chunks: list[dict], api_key: str, language: Optional[str] = None, model: str = ACCURACY_MODEL, context_prompt: str = "", progress_callback: Optional[Callable[[int, int, str], None]] = None) -> dict:
     if not api_key:
         raise ValueError("A Groq API key is required.")
 
-    all_segments = []
-    text_parts = []
-    languages = []
+    all_segments: list[dict] = []
+    text_parts: list[str] = []
+    languages: list[str] = []
+    chunk_results: list[dict] = []
     total = len(chunks)
     previous_tail = ""
 
     for i, chunk in enumerate(chunks, start=1):
         if progress_callback:
             progress_callback(i - 1, total, f"Transcribing part {i} of {total}…")
-
         payload = _post_audio(
-            path=chunk["path"],
-            api_key=api_key,
-            endpoint=TRANSCRIPTION_URL,
-            model=model,
-            language=language,
-            prompt=_compact_prompt(context_prompt, previous_tail),
+            path=chunk["path"], api_key=api_key, endpoint=TRANSCRIPTION_URL, model=model,
+            language=language, prompt=_compact_prompt(context_prompt, previous_tail),
         )
-
+        before = len(all_segments)
         text = _merge_payload(
             payload=payload,
             offset=float(chunk.get("offset", 0.0)),
@@ -208,9 +170,21 @@ def transcribe_chunks(
             text_parts=text_parts,
             languages=languages,
         )
+        chunk_segments = all_segments[before:]
+        language_used = str(payload.get("language", "") or "").strip()
+        nominal_end = float(chunk.get("nominal_end") or (float(chunk.get("offset", 0.0)) + float(chunk.get("duration", 0.0))))
+        chunk_results.append({
+            "index": i,
+            "offset": float(chunk.get("offset", 0.0)),
+            "keep_after": float(chunk.get("keep_after", chunk.get("offset", 0.0))),
+            "end": nominal_end,
+            "duration": float(chunk.get("duration", 0.0)),
+            "text": text,
+            "language": language_used,
+            "segment_count": len(chunk_segments),
+        })
         if text:
             previous_tail = text[-350:]
-
         if progress_callback:
             progress_callback(i, total, f"Finished part {i} of {total}.")
 
@@ -228,37 +202,27 @@ def transcribe_chunks(
         "model": model,
         "parts": total,
         "languages": languages,
+        "chunk_results": chunk_results,
     }
 
 
-def translate_chunks(
-    *,
-    chunks: list[dict],
-    api_key: str,
-    context_prompt: str = "",
-    progress_callback: Optional[Callable[[int, int, str], None]] = None,
-) -> dict:
+def translate_chunks(*, chunks: list[dict], api_key: str, context_prompt: str = "", progress_callback: Optional[Callable[[int, int, str], None]] = None) -> dict:
     if not api_key:
         raise ValueError("A Groq API key is required.")
 
-    all_segments = []
-    text_parts = []
-    languages = []
+    all_segments: list[dict] = []
+    text_parts: list[str] = []
+    languages: list[str] = []
     total = len(chunks)
     previous_tail = ""
 
     for i, chunk in enumerate(chunks, start=1):
         if progress_callback:
             progress_callback(i - 1, total, f"Translating part {i} of {total}…")
-
         payload = _post_audio(
-            path=chunk["path"],
-            api_key=api_key,
-            endpoint=TRANSLATION_URL,
-            model=ACCURACY_MODEL,
-            prompt=_compact_prompt(context_prompt, previous_tail),
+            path=chunk["path"], api_key=api_key, endpoint=TRANSLATION_URL,
+            model=ACCURACY_MODEL, prompt=_compact_prompt(context_prompt, previous_tail),
         )
-
         text = _merge_payload(
             payload=payload,
             offset=float(chunk.get("offset", 0.0)),
@@ -269,7 +233,6 @@ def translate_chunks(
         )
         if text:
             previous_tail = text[-350:]
-
         if progress_callback:
             progress_callback(i, total, f"Finished translation part {i} of {total}.")
 

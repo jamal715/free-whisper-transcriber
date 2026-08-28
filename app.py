@@ -146,17 +146,26 @@ uploaded = st.file_uploader(
     help="M4A or MP3 is recommended for 60–90 minute interviews.",
 )
 
+# Always render the primary action. This avoids the confusing state where the
+# browser already shows a large file card while Streamlit is still finalizing
+# the upload on the backend.
+ready_to_transcribe = uploaded is not None and bool(api_key)
+start_transcription = st.button(
+    "Transcribe interview" if ready_to_transcribe else "Waiting for upload…",
+    type="primary",
+    use_container_width=True,
+    disabled=not ready_to_transcribe,
+)
+
 if uploaded is None:
-    st.info("Upload an interview when ready. Nothing is processed until you press Transcribe.")
-    with st.expander("What this version is designed for"):
-        st.markdown(
-            "- 60–90+ minute research interviews\n"
-            "- Urdu / English code-switching\n"
-            "- accuracy-first or fast-draft mode\n"
-            "- timestamped transcript + SRT + CSV + JSON\n"
-            "- optional separate English translation\n"
-            "- automatic review flags for uncertain-looking segments"
-        )
+    st.info(
+        "Waiting for the upload to finish. For very large files, the browser may show "
+        "the file card a little before Streamlit has finished receiving it."
+    )
+    st.caption(
+        "If the file card has been sitting there for more than a minute with the button still disabled, "
+        "remove the file once and select it again after this app update finishes deploying."
+    )
     st.stop()
 
 size_mb = uploaded.size / (1024 * 1024)
@@ -178,7 +187,7 @@ if not api_key:
     st.warning("Enter the Groq API key before starting.")
     st.stop()
 
-if st.button("Transcribe interview", type="primary", use_container_width=True):
+if start_transcription:
     st.session_state.pop("result", None)
     work_dir = Path(tempfile.mkdtemp(prefix="jami_research_"))
     suffix = Path(uploaded.name).suffix.lower() or ".m4a"
@@ -202,6 +211,8 @@ if st.button("Transcribe interview", type="primary", use_container_width=True):
                 "path": str(source_path),
                 "duration": duration,
                 "offset": 0.0,
+                "keep_after": 0.0,
+                "nominal_end": duration,
             }]
         else:
             progress.progress(5, text="Splitting large recording safely…")

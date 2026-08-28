@@ -153,14 +153,44 @@ def transcribe_chunks(*, chunks: list[dict], api_key: str, language: Optional[st
     chunk_results: list[dict] = []
     total = len(chunks)
     previous_tail = ""
+    primary_failures = 0
 
     for i, chunk in enumerate(chunks, start=1):
         if progress_callback:
             progress_callback(i - 1, total, f"Transcribing part {i} of {total}…")
-        payload = _post_audio(
-            path=chunk["path"], api_key=api_key, endpoint=TRANSCRIPTION_URL, model=model,
-            language=language, prompt=_compact_prompt(context_prompt, previous_tail),
+
+        payload = None
+        primary_error = None
+        try:
+            payload = _post_audio(
+                path=chunk["path"], api_key=api_key, endpoint=TRANSCRIPTION_URL, model=model,
+                language=language, prompt=_compact_prompt(context_prompt, previous_tail),
+            )
+        except Exception as exc:
+            primary_error = str(exc)
+            primary_failures += 1
+
+        nominal_end = float(
+            chunk.get("nominal_end")
+            or (float(chunk.get("offset", 0.0)) + float(chunk.get("duration", 0.0)))
         )
+
+        if payload is None:
+            chunk_results.append({
+                "index": i,
+                "offset": float(chunk.get("offset", 0.0)),
+                "keep_after": float(chunk.get("keep_after", chunk.get("offset", 0.0))),
+                "end": nominal_end,
+                "duration": float(chunk.get("duration", 0.0)),
+                "text": "",
+                "language": "",
+                "segment_count": 0,
+                "error": primary_error,
+            })
+            if progress_callback:
+                progress_callback(i, total, f"Primary engine could not finish part {i}; preserving the run for validation/rescue.")
+            continue
+
         before = len(all_segments)
         text = _merge_payload(
             payload=payload,
@@ -172,7 +202,6 @@ def transcribe_chunks(*, chunks: list[dict], api_key: str, language: Optional[st
         )
         chunk_segments = all_segments[before:]
         language_used = str(payload.get("language", "") or "").strip()
-        nominal_end = float(chunk.get("nominal_end") or (float(chunk.get("offset", 0.0)) + float(chunk.get("duration", 0.0))))
         chunk_results.append({
             "index": i,
             "offset": float(chunk.get("offset", 0.0)),
@@ -182,6 +211,7 @@ def transcribe_chunks(*, chunks: list[dict], api_key: str, language: Optional[st
             "text": text,
             "language": language_used,
             "segment_count": len(chunk_segments),
+            "error": None,
         })
         if text:
             previous_tail = text[-350:]
@@ -203,6 +233,7 @@ def transcribe_chunks(*, chunks: list[dict], api_key: str, language: Optional[st
         "parts": total,
         "languages": languages,
         "chunk_results": chunk_results,
+        "primary_failures": primary_failures,
     }
 
 

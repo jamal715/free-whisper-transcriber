@@ -13,8 +13,7 @@ import streamlit as st
 from brand import LOGO_DATA_URI
 from cloud_transcriber import ACCURACY_MODEL, FAST_MODEL, transcribe_chunks
 from media import MAX_CHUNK_BYTES, probe_duration, split_audio_lossless
-from openai_validator import transcribe_for_validation
-from quality import assess_dual, overall_health
+from quality import assess_single, overall_health
 from text_postprocess import translate_validated_chunks, build_research_summary
 from utils import transcript_to_srt, format_seconds
 
@@ -31,54 +30,97 @@ st.set_page_config(
 st.markdown(
     f"""
 <style>
-:root{{--q:{PRIMARY};--ink:#111418;--muted:#66717c;--line:#dfe4e7;--soft:#f7f9fa;--ok:#18794e;--warn:#9a6700;}}
-[data-testid="stSidebar"]{{display:none;}}
-[data-testid="stHeader"]{{background:rgba(255,255,255,.98);height:3.25rem;}}
-.stApp{{background:#fff;color:var(--ink);}}
-.block-container{{max-width:1480px;padding:4.7rem 2.3rem 3rem!important;}}
-html,body,[class*="css"]{{font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;}}
-.q-top{{display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line);padding:0 2px 17px;margin-bottom:24px;min-height:72px;}}
-.q-brand{{display:flex;align-items:center;gap:14px;min-width:0;}}
-.q-brand img{{width:58px!important;height:58px!important;object-fit:contain!important;object-position:center!important;border-radius:0!important;box-shadow:none!important;background:#fff!important;}}
-.q-name{{font-size:29px;font-weight:800;letter-spacing:-.8px;color:#111418;}}
-.q-divider{{width:1px;height:36px;background:#d9dfe3;margin:0 5px;}}
-.q-tag{{font-size:14px;color:#52606b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:520px;}}
-.q-pill{{border:1px solid #cad5db;border-radius:10px;padding:9px 13px;color:var(--q);background:#fbfcfd;font-size:13px;font-weight:700;}}
-.q-hero{{text-align:center;padding:8px 0 20px;}}
-.q-hero h1{{font-size:39px;letter-spacing:-1.3px;margin:.1rem 0 .55rem;line-height:1.1;}}
-.q-hero p{{font-size:16px;color:#6a7480;margin:0;}}
-.q-panel-title{{font-size:20px;font-weight:800;margin:2px 0 11px;}}
-.q-security{{border:1px solid var(--line);border-radius:12px;padding:14px;background:#fafcfd;color:#5f6973;font-size:12px;line-height:1.55;margin-top:14px;}}
-.q-connected{{color:var(--ok);font-size:12px;font-weight:750;margin-top:6px;}}
-.q-readiness{{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:12px 0 10px;}}
-.q-ready{{border:1px solid var(--line);border-radius:10px;padding:10px 12px;background:#fafcfd;font-size:12px;color:#5b6570;}}
-.q-ready strong{{display:block;color:#161a1e;font-size:12px;margin-bottom:2px;}}
-.q-ready.ok{{border-color:#b9d8ca;background:#f5fbf8;}}
-.q-ready.warn{{border-color:#ead9a7;background:#fffbeb;}}
-.q-run-note{{background:#f4f8fa;border:1px solid #d8e5ea;border-radius:11px;padding:12px 14px;color:#53616c;font-size:13px;margin:10px 0;}}
-.q-live{{border:1px solid #cfe0e8;background:#fbfdfe;border-radius:12px;padding:14px 16px;margin-top:12px;}}
-.q-live-title{{font-weight:800;color:var(--q);margin-bottom:8px;}}
-.q-live-part{{padding:8px 0;border-top:1px solid #e7eef2;}}
-.q-live-time{{font-size:11px;color:#687782;font-weight:700;}}
-.q-live-text{{font-size:14px;line-height:1.6;color:#181c20;margin-top:3px;}}
-.q-pipeline{{border:1px solid #d7e3e9;background:#f7fbfc;border-radius:12px;padding:12px 14px;margin:12px 0;}}
-.q-pipeline strong{{color:var(--q);}}
-.q-health{{border-left:4px solid var(--q);background:#f5fafc;padding:14px 16px;border-radius:9px;margin:8px 0 16px;}}
-.q-health strong{{font-size:16px;}}
-.q-chunk{{border-bottom:1px solid #e8ecef;padding:13px 2px 15px;}}
-.q-time{{font-size:12px;color:var(--q);font-weight:750;}}
-.q-text{{font-size:15px;line-height:1.72;color:#171a1d;margin-top:5px;}}
-.q-provider{{font-size:11px;color:#8a939b;margin-top:5px;}}
-div[data-testid="stVerticalBlockBorderWrapper"]{{border-color:var(--line)!important;border-radius:14px!important;box-shadow:0 1px 2px rgba(0,0,0,.02);}}
-div[data-testid="stFileUploader"] section{{min-height:220px;border:1.5px dashed #a9c6d4;background:#fcfdfe;border-radius:14px;display:flex;align-items:center;}}
-div[data-testid="stFileUploader"] button{{background:var(--q)!important;color:#fff!important;border:none!important;border-radius:8px!important;}}
-.stButton>button[kind="primary"]{{background:var(--q)!important;color:#fff!important;border:1px solid var(--q)!important;min-height:50px;font-weight:750;border-radius:9px;}}
-.stButton>button:disabled{{opacity:.52!important;}}
-.stTabs [data-baseweb="tab-list"]{{gap:25px;border-bottom:1px solid var(--line);}}
-.stTabs [aria-selected="true"]{{color:var(--q)!important;}}
-div[data-testid="stMetricValue"]{{font-size:1.42rem;color:#111820;}}
-div[data-testid="stAlert"]{{border-radius:10px;}}
-@media(max-width:1000px){{.q-tag,.q-divider{{display:none}}.q-readiness{{grid-template-columns:1fr 1fr}}.block-container{{padding:4.2rem 1rem 2rem!important}}.q-hero h1{{font-size:31px}}}}
+:root {{
+  --q:{PRIMARY};
+  --q-deep:#003b59;
+  --q-dark:#002f47;
+  --panel:#074664;
+  --panel2:#0a415b;
+  --line:rgba(255,255,255,.14);
+  --text:#f6f8fa;
+  --muted:#b6c6cf;
+  --faint:#8fa8b5;
+  --accent:#78d1f3;
+  --green:#6fe0aa;
+  --amber:#ffd37a;
+  --red:#ff8f91;
+}}
+[data-testid="stSidebar"] {{display:none;}}
+[data-testid="stHeader"] {{background:rgba(0,47,71,.98); height:3.25rem;}}
+[data-testid="stToolbar"] {{color:white;}}
+.stApp {{background:var(--q); color:var(--text);}}
+.block-container {{max-width:1540px; padding:4.6rem 2.4rem 4rem!important;}}
+html,body,[class*="css"] {{font-family:Inter,"Avenir Next","Segoe UI",system-ui,sans-serif;}}
+h1,h2,h3,h4,p,label,span,div {{color:inherit;}}
+
+.q-top {{display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line);padding:0 0 18px;margin-bottom:24px;}}
+.q-brand {{display:flex;align-items:center;gap:14px;min-width:0;}}
+.q-brand img {{width:56px!important;height:56px!important;object-fit:contain!important;border-radius:12px!important;box-shadow:0 8px 24px rgba(0,0,0,.18);}}
+.q-name {{font-size:29px;font-weight:800;letter-spacing:-.8px;color:white;}}
+.q-divider {{width:1px;height:35px;background:var(--line);margin:0 4px;}}
+.q-tag {{font-size:13px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:530px;}}
+.q-pill {{border:1px solid var(--line);border-radius:999px;padding:9px 14px;color:#d9f3ff;background:rgba(255,255,255,.06);font-size:12px;font-weight:700;}}
+
+.q-hero {{padding:10px 0 24px;display:flex;align-items:flex-end;justify-content:space-between;gap:20px;}}
+.q-hero h1 {{font-size:42px;line-height:1.05;letter-spacing:-1.6px;margin:0 0 8px;color:white;}}
+.q-hero p {{font-size:16px;color:var(--muted);margin:0;max-width:760px;}}
+.q-engine {{font-size:12px;color:var(--accent);font-weight:700;background:rgba(120,209,243,.08);border:1px solid rgba(120,209,243,.25);padding:9px 12px;border-radius:9px;white-space:nowrap;}}
+
+.q-panel-title {{font-size:13px;font-weight:750;text-transform:uppercase;letter-spacing:.08em;color:#d9edf7;margin:1px 0 8px;}}
+.q-note {{background:rgba(255,255,255,.055);border:1px solid var(--line);border-radius:12px;padding:13px 14px;color:var(--muted);font-size:12px;line-height:1.55;}}
+.q-ready-grid {{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:12px 0 14px;}}
+.q-ready {{background:rgba(255,255,255,.055);border:1px solid var(--line);border-radius:12px;padding:12px 13px;}}
+.q-ready-label {{font-size:10px;color:var(--faint);text-transform:uppercase;letter-spacing:.08em;font-weight:700;}}
+.q-ready-value {{font-size:14px;color:white;font-weight:750;margin-top:3px;}}
+.q-ok {{color:var(--green)!important;}}
+.q-warn {{color:var(--amber)!important;}}
+
+.q-pipeline {{background:rgba(0,0,0,.14);border:1px solid var(--line);border-radius:13px;padding:14px 16px;margin:12px 0;}}
+.q-pipeline strong {{color:white;}}
+.q-pipeline small {{color:var(--muted);}}
+.q-live {{background:var(--q-deep);border:1px solid var(--line);border-radius:14px;padding:16px;margin-top:12px;max-height:520px;overflow-y:auto;}}
+.q-live-title {{font-weight:800;color:white;margin-bottom:4px;}}
+.q-live-sub {{font-size:12px;color:var(--muted);margin-bottom:10px;}}
+.q-live-part {{padding:10px 0;border-top:1px solid rgba(255,255,255,.09);}}
+.q-live-time {{font-size:10px;color:var(--accent);font-weight:750;letter-spacing:.03em;}}
+.q-live-text {{font-size:14px;color:#eef5f8;line-height:1.65;margin-top:4px;}}
+
+.q-health {{display:flex;align-items:center;justify-content:space-between;gap:18px;background:var(--q-dark);border:1px solid var(--line);border-radius:14px;padding:16px 18px;margin:16px 0;}}
+.q-health-title {{font-size:16px;color:white;font-weight:800;}}
+.q-health-sub {{font-size:12px;color:var(--muted);margin-top:3px;}}
+.q-score {{font-size:29px;font-weight:850;color:white;letter-spacing:-1px;}}
+.q-chunk {{border-bottom:1px solid rgba(255,255,255,.10);padding:14px 3px 16px;}}
+.q-time {{font-size:11px;color:var(--accent);font-weight:800;}}
+.q-text {{font-size:15px;line-height:1.75;color:#f1f6f8;margin-top:5px;}}
+.q-provider {{font-size:10px;color:var(--faint);margin-top:6px;}}
+.q-silence {{font-size:13px;color:var(--faint);font-style:italic;margin-top:5px;}}
+
+/* Native Streamlit controls */
+div[data-testid="stVerticalBlockBorderWrapper"] {{background:rgba(0,0,0,.08)!important;border:1px solid var(--line)!important;border-radius:15px!important;box-shadow:none!important;}}
+div[data-testid="stFileUploader"] section {{min-height:210px;border:1.4px dashed rgba(169,219,239,.55)!important;background:rgba(0,0,0,.08)!important;border-radius:13px!important;}}
+div[data-testid="stFileUploader"] button {{background:#e9f6fb!important;color:#003b59!important;border:none!important;border-radius:9px!important;font-weight:750!important;}}
+[data-testid="stFileUploaderDropzoneInstructions"] span,[data-testid="stFileUploaderDropzoneInstructions"] small {{color:#d9e8ee!important;}}
+.stButton>button[kind="primary"] {{background:#e8f6fb!important;color:#003b59!important;border:none!important;min-height:50px;font-weight:800;border-radius:10px;}}
+.stButton>button[kind="secondary"] {{background:rgba(255,255,255,.08)!important;color:white!important;border:1px solid var(--line)!important;}}
+.stButton>button:disabled {{opacity:.45!important;}}
+[data-baseweb="select"]>div,[data-baseweb="input"]>div,textarea {{background:rgba(0,0,0,.13)!important;color:white!important;border-color:var(--line)!important;}}
+[data-baseweb="select"] span,input,textarea {{color:white!important;}}
+.stTabs [data-baseweb="tab-list"] {{gap:26px;border-bottom:1px solid var(--line);}}
+.stTabs [data-baseweb="tab"] {{color:#b8cbd4!important;}}
+.stTabs [aria-selected="true"] {{color:white!important;border-bottom-color:var(--accent)!important;}}
+div[data-testid="stMetric"] {{background:rgba(0,0,0,.10);border:1px solid var(--line);border-radius:12px;padding:12px 14px;}}
+div[data-testid="stMetricLabel"] {{color:var(--muted)!important;}}
+div[data-testid="stMetricValue"] {{color:white!important;font-size:1.42rem;}}
+div[data-testid="stAlert"] {{background:rgba(0,0,0,.12)!important;color:white!important;border:1px solid var(--line)!important;border-radius:11px;}}
+div[data-testid="stDataFrame"] {{border:1px solid var(--line);border-radius:12px;overflow:hidden;}}
+hr {{border-color:var(--line)!important;}}
+
+@media(max-width:1000px) {{
+ .q-tag,.q-divider,.q-engine{{display:none}}
+ .q-ready-grid{{grid-template-columns:1fr 1fr}}
+ .block-container{{padding:4.2rem 1rem 2rem!important}}
+ .q-hero h1{{font-size:32px}}
+}}
 </style>
 """,
     unsafe_allow_html=True,
@@ -93,11 +135,14 @@ st.markdown(
     <div class="q-divider"></div>
     <div class="q-tag">Quantifying economic signals for a sustainable future.</div>
   </div>
-  <div class="q-pill">🔒 Research workspace</div>
+  <div class="q-pill">◆ Research Intelligence Workspace</div>
 </div>
 <div class="q-hero">
-  <h1>QuantOra Research Transcriber</h1>
-  <p>Accurate transcription, validation and English translation for Urdu–English research interviews.</p>
+  <div>
+    <h1>Research Transcriber</h1>
+    <p>Accuracy-first Urdu + English interview transcription. Long recordings are divided into one-minute listening windows, checked for corruption, and reassembled into a research-ready record.</p>
+  </div>
+  <div class="q-engine">FREE ENGINE · WHISPER LARGE V3</div>
 </div>
 """,
     unsafe_allow_html=True,
@@ -113,21 +158,29 @@ def secret(name: str) -> str:
 
 def timestamped_text(segments: list[dict]) -> str:
     return "\n".join(
-        f"[{format_seconds(float(s.get('start',0)))} → {format_seconds(float(s.get('end',0)))}] {str(s.get('text','')).strip()}"
+        f"[{format_seconds(float(s.get('start', 0)))} → {format_seconds(float(s.get('end', 0)))}] {str(s.get('text', '')).strip()}"
         for s in segments if str(s.get("text", "")).strip()
     )
 
 
 def validated_text(chunks: list[dict]) -> str:
-    return "\n\n".join(
-        f"[{format_seconds(float(c.get('start',0)))} → {format_seconds(float(c.get('end',0)))}]\n{str(c.get('selected_text','')).strip()}"
-        for c in chunks if str(c.get("selected_text", "")).strip()
-    )
+    rows = []
+    for c in chunks:
+        state = c.get("status")
+        start = format_seconds(float(c.get("start", 0)))
+        end = format_seconds(float(c.get("end", 0)))
+        if state == "silence":
+            rows.append(f"[{start} → {end}] [silence / no confident speech]")
+        elif c.get("selected_text"):
+            rows.append(f"[{start} → {end}]\n{str(c.get('selected_text')).strip()}")
+        else:
+            rows.append(f"[{start} → {end}] [REVIEW REQUIRED — transcription unavailable]")
+    return "\n\n".join(rows)
 
 
 def translation_text(result: dict) -> str:
     return "\n\n".join(
-        f"[{format_seconds(float(c.get('start',0)))} → {format_seconds(float(c.get('end',0)))}]\n{str(c.get('text','')).strip()}"
+        f"[{format_seconds(float(c.get('start', 0)))} → {format_seconds(float(c.get('end', 0)))}]\n{str(c.get('text', '')).strip()}"
         for c in result.get("chunks", []) if str(c.get("text", "")).strip()
     )
 
@@ -138,159 +191,105 @@ def segments_to_csv(segments: list[dict]) -> str:
     w.writerow(["start_seconds", "end_seconds", "start", "end", "text", "review_flag"])
     for s in segments:
         w.writerow([
-            f"{float(s.get('start',0)):.3f}",
-            f"{float(s.get('end',0)):.3f}",
-            format_seconds(float(s.get("start",0))),
-            format_seconds(float(s.get("end",0))),
-            str(s.get("text", "")).strip(),
-            "YES" if s.get("review_flag") else "",
+            f"{float(s.get('start', 0)):.3f}", f"{float(s.get('end', 0)):.3f}",
+            format_seconds(float(s.get("start", 0))), format_seconds(float(s.get("end", 0))),
+            str(s.get("text", "")).strip(), "YES" if s.get("review_flag") else "",
         ])
     return buf.getvalue()
 
 
-def render_readiness(file_ready: bool, groq_ready: bool, openai_ready: bool, translation_on: bool) -> str:
-    def card(title: str, value: str, state: str) -> str:
-        return f'<div class="q-ready {state}"><strong>{html.escape(title)}</strong>{html.escape(value)}</div>'
-    return (
-        '<div class="q-readiness">'
-        + card("Recording", "Ready ✓" if file_ready else "Waiting", "ok" if file_ready else "")
-        + card("Groq transcription", "Ready ✓" if groq_ready else "API key needed", "ok" if groq_ready else "warn")
-        + card("Independent validation", "Ready ✓" if openai_ready else "Optional / not connected", "ok" if openai_ready else "")
-        + card("English translation", "On ✓" if translation_on else "Off", "ok" if translation_on else "")
-        + '</div>'
-    )
+def status_card(label: str, value: str, ok: bool = False, warn: bool = False) -> str:
+    cls = "q-ok" if ok else "q-warn" if warn else ""
+    return f'<div class="q-ready"><div class="q-ready-label">{html.escape(label)}</div><div class="q-ready-value {cls}">{html.escape(value)}</div></div>'
 
 
 saved_groq = secret("GROQ_API_KEY")
-saved_openai = secret("OPENAI_API_KEY")
 if "session_groq_key" not in st.session_state:
     st.session_state.session_groq_key = ""
-if "session_openai_key" not in st.session_state:
-    st.session_state.session_openai_key = ""
 
-left, main = st.columns([0.23, 0.77], gap="large")
+left, main = st.columns([0.25, 0.75], gap="large")
 
 with left:
     with st.container(border=True):
-        st.markdown('<div class="q-panel-title">Language</div>', unsafe_allow_html=True)
+        st.markdown('<div class="q-panel-title">Interview language</div>', unsafe_allow_html=True)
         language_label = st.selectbox(
             "Language",
             ["Urdu + English (mixed)", "Mostly Urdu", "Mostly English"],
             index=0,
             label_visibility="collapsed",
-            help="For normal Pakistani code-switching, keep Mixed.",
+            help="Use Mixed for normal Pakistani code-switching.",
         )
         language_map = {"Urdu + English (mixed)": None, "Mostly Urdu": "ur", "Mostly English": "en"}
 
-        st.markdown('<div class="q-panel-title" style="margin-top:20px">Transcription mode</div>', unsafe_allow_html=True)
+        st.markdown('<div class="q-panel-title" style="margin-top:20px">Engine mode</div>', unsafe_allow_html=True)
         mode_label = st.selectbox(
             "Mode",
-            ["Maximum confidence", "Research accuracy", "Fast draft"],
+            ["Research accuracy", "Fast draft"],
             index=0,
             label_visibility="collapsed",
-            help="Maximum confidence = Groq Large V3 + independent OpenAI validation when configured.",
         )
-        model = FAST_MODEL if mode_label == "Fast draft" else ACCURACY_MODEL
+        model = ACCURACY_MODEL if mode_label == "Research accuracy" else FAST_MODEL
 
-        st.markdown('<div class="q-panel-title" style="margin-top:20px">Translation</div>', unsafe_allow_html=True)
-        make_translation = st.toggle(
-            "Create English translation",
-            value=True,
-            help="Recommended for mixed Urdu/English interviews. Translation is made from the validated transcript.",
-        )
+        st.markdown('<div class="q-panel-title" style="margin-top:20px">Outputs</div>', unsafe_allow_html=True)
+        make_translation = st.toggle("English translation", value=True)
 
-        with st.expander("Advanced", expanded=True):
+        with st.expander("Context & API", expanded=True):
             context = st.text_area(
-                "Names / places / research terms",
-                placeholder="HBL, PASCO, IFC, people, places, technical terms…",
+                "Names / places / technical terms",
+                placeholder="PASCO, HBL, Dreyfus, Layyah, names, acronyms…",
                 height=90,
-                max_chars=900,
+                max_chars=700,
             )
-
             if saved_groq:
-                st.markdown('<div class="q-connected">● Groq connected from Streamlit Secrets</div>', unsafe_allow_html=True)
+                st.success("Groq connected from Streamlit Secrets")
             else:
-                st.text_input(
-                    "Groq API key",
-                    type="password",
-                    placeholder="gsk_…",
-                    key="groq_key_input",
-                    help="Paste the key, then press Apply API keys below.",
-                )
-
-            if saved_openai:
-                st.markdown('<div class="q-connected">● OpenAI validator connected from Streamlit Secrets</div>', unsafe_allow_html=True)
-            else:
-                st.text_input(
-                    "OpenAI API key (optional)",
-                    type="password",
-                    placeholder="sk-…",
-                    key="openai_key_input",
-                    help="Optional second speech engine for independent validation/rescue.",
-                )
-
-            if not saved_groq or not saved_openai:
-                if st.button("Apply API keys for this session", use_container_width=True, key="apply_keys"):
-                    if not saved_groq:
-                        st.session_state.session_groq_key = str(st.session_state.get("groq_key_input", "") or "").strip()
-                    if not saved_openai:
-                        st.session_state.session_openai_key = str(st.session_state.get("openai_key_input", "") or "").strip()
-
+                st.text_input("Groq API key", type="password", placeholder="gsk_…", key="groq_key_input")
+                if st.button("Apply Groq key", use_container_width=True):
+                    st.session_state.session_groq_key = str(st.session_state.get("groq_key_input", "") or "").strip()
                 if st.session_state.session_groq_key:
-                    st.markdown('<div class="q-connected">● Groq key applied for this session</div>', unsafe_allow_html=True)
-                if st.session_state.session_openai_key:
-                    st.markdown('<div class="q-connected">● OpenAI key applied for this session</div>', unsafe_allow_html=True)
+                    st.success("Groq key active for this session")
 
     st.markdown(
-        '<div class="q-security"><strong>Research privacy</strong><br>Temporary audio/chunks are deleted after each run. Store API keys in Streamlit Secrets for the permanent setup. Do not refresh the page while a long interview is processing.</div>',
+        '<div class="q-note"><strong style="color:white">Research rule</strong><br>Silence is recorded as silence, not failure. Garbled sections stay flagged. Translation and summaries never hide failed source sections.</div>',
         unsafe_allow_html=True,
     )
 
 
 groq_key = saved_groq or st.session_state.session_groq_key
-openai_key = saved_openai or st.session_state.session_openai_key
 
 with main:
     with st.container(border=True):
         uploaded = st.file_uploader(
-            "Drag & drop your audio or video file here",
+            "Drop interview audio or video",
             type=["m4a", "mp3", "mp4", "wav", "flac", "ogg", "webm", "mpeg", "mpga"],
             accept_multiple_files=False,
-            help="Designed for interviews up to 120 minutes. MP3/M4A is recommended for long interviews.",
+            help="Up to 120 minutes. MP3/M4A recommended.",
         )
 
     file_ready = uploaded is not None
-    groq_ready = bool(groq_key)
-    openai_ready = bool(openai_key)
-    ready = file_ready and groq_ready
+    key_ready = bool(groq_key)
+    ready = file_ready and key_ready
 
-    st.markdown(render_readiness(file_ready, groq_ready, openai_ready, make_translation), unsafe_allow_html=True)
+    readiness = (
+        '<div class="q-ready-grid">'
+        + status_card("Recording", "Ready" if file_ready else "Waiting", ok=file_ready)
+        + status_card("Speech engine", "Connected" if key_ready else "API key needed", ok=key_ready, warn=not key_ready)
+        + status_card("Accuracy mode", "Large V3" if model == ACCURACY_MODEL else "Large V3 Turbo", ok=True)
+        + status_card("English output", "Enabled" if make_translation else "Off", ok=make_translation)
+        + '</div>'
+    )
+    st.markdown(readiness, unsafe_allow_html=True)
 
     if uploaded is not None:
         size_mb = uploaded.size / (1024 * 1024)
         a, b, c = st.columns(3)
-        a.metric("File", uploaded.name)
-        b.metric("Size", f"{size_mb:.1f} MB")
-        if mode_label == "Maximum confidence" and openai_ready:
-            c.metric("Validation", "Dual engine")
-        elif mode_label == "Maximum confidence":
-            c.metric("Validation", "Integrity scan")
-        else:
-            c.metric("Model", "Large V3" if model == ACCURACY_MODEL else "Large V3 Turbo")
+        a.metric("Recording", uploaded.name)
+        b.metric("Upload", f"{size_mb:.1f} MB")
+        c.metric("Pipeline", "60 sec windows")
 
-        st.markdown(
-            '<div class="q-run-note">Long recordings are automatically split into safe overlapping parts. A live draft appears below as each part finishes. The final transcript can change after independent validation/rescue.</div>',
-            unsafe_allow_html=True,
-        )
-
-    if not groq_ready:
-        st.info("Open Advanced, paste your Groq key, then click **Apply API keys for this session**.")
-    if mode_label == "Maximum confidence" and not openai_ready:
-        st.warning("You can run now with Groq + integrity checks. Add an OpenAI API key for independent chunk-by-chunk validation and rescue.")
-
-    action = "Start transcription + validation" + (" + translation" if make_translation else "")
+    action = "Run research transcription"
     start = st.button(
-        action if ready else "Waiting for recording and Groq key…",
+        action if ready else "Waiting for recording + Groq key",
         type="primary",
         use_container_width=True,
         disabled=not ready,
@@ -300,95 +299,77 @@ with main:
     live_box = st.empty()
 
     if not st.session_state.get("result") and not start:
-        tabs = st.tabs(["Transcript", "Translation", "Validation", "Summary", "Downloads"])
-        with tabs[0]:
-            st.info("Your live transcript will appear here once you press **Start transcription**. Final validated text replaces the live draft when the run finishes.")
-        with tabs[1]:
-            st.caption("The English translation appears here after transcription and validation.")
-        with tabs[2]:
-            st.caption("Chunk-by-chunk PASS / REVIEW / FAILED checks appear here after validation.")
-        with tabs[3]:
-            st.caption("A research summary can be generated from the validated transcript after the run.")
-        with tabs[4]:
-            st.caption("Validated transcript, translation, raw timestamps and validation report become downloadable here.")
+        tabs = st.tabs(["Transcript", "Translation", "Quality", "Summary", "Downloads"])
+        with tabs[0]: st.caption("The live draft appears here while the interview is being processed.")
+        with tabs[1]: st.caption("English translation is generated only from accepted/reviewable source text.")
+        with tabs[2]: st.caption("Speech, silence, review and failed windows are separated here.")
+        with tabs[3]: st.caption("Generate an executive research summary after transcription.")
+        with tabs[4]: st.caption("Download transcript, translation, timestamps, CSV and QA report here.")
 
     if start:
         st.session_state.pop("result", None)
         st.session_state.pop("research_summary", None)
-        work_dir = Path(tempfile.mkdtemp(prefix="quantora_research_"))
-        source_path = work_dir / f"source{Path(uploaded.name).suffix.lower() or '.m4a'}"
+        work_dir = Path(tempfile.mkdtemp(prefix="quantora_free_"))
+        suffix = Path(uploaded.name).suffix.lower() or ".m4a"
+        source_path = work_dir / f"source{suffix}"
         chunk_dir = work_dir / "chunks"
-        progress = st.progress(0, text="Receiving interview…")
-        status = st.status("QuantOra processing pipeline", expanded=True)
+        progress = st.progress(0, text="Preparing recording…")
         live_chunks: list[dict] = []
 
-        def show_pipeline(step: int, detail: str) -> None:
+        def pipeline(title: str, detail: str) -> None:
             pipeline_box.markdown(
-                f'<div class="q-pipeline"><strong>Processing is active — Step {step}/5</strong><br>{html.escape(detail)}<br><span style="font-size:12px;color:#71808a">Keep this browser tab open. Do not refresh while the run is active.</span></div>',
+                f'<div class="q-pipeline"><strong>{html.escape(title)}</strong><br><small>{html.escape(detail)}</small></div>',
                 unsafe_allow_html=True,
             )
 
         def show_live() -> None:
             parts = []
-            for c in live_chunks:
+            for c in live_chunks[-12:]:
                 text = html.escape(str(c.get("text", "") or "")).replace("\n", "<br>")
                 if not text:
-                    text = "[No usable draft text returned for this part — validation may rescue it.]"
+                    text = "… no confident speech returned in this window"
                 parts.append(
-                    f'<div class="q-live-part"><div class="q-live-time">Part {c.get("index")} · {format_seconds(float(c.get("keep_after",0)))} — {format_seconds(float(c.get("end",0)))}</div><div class="q-live-text">{text}</div></div>'
+                    f'<div class="q-live-part"><div class="q-live-time">{format_seconds(float(c.get("keep_after", 0)))} — {format_seconds(float(c.get("end", 0)))}</div><div class="q-live-text">{text}</div></div>'
                 )
             live_box.markdown(
-                '<div class="q-live"><div class="q-live-title">Live draft transcript</div><div style="font-size:12px;color:#697782;margin-bottom:6px">This updates as each audio part finishes. It is not final until validation completes.</div>'
-                + "".join(parts)
-                + '</div>',
+                '<div class="q-live"><div class="q-live-title">Live transcript</div><div class="q-live-sub">Showing the latest listening windows. Final QA is applied after the speech pass.</div>' + "".join(parts) + '</div>',
                 unsafe_allow_html=True,
             )
 
         try:
-            show_pipeline(1, "Receiving the uploaded recording and checking its duration.")
+            pipeline("Stage 1 · Audio intake", "Receiving the recording and checking duration.")
             with source_path.open("wb") as out:
                 uploaded.seek(0)
                 shutil.copyfileobj(uploaded, out, length=1024 * 1024)
 
             duration = probe_duration(str(source_path))
             if not duration:
-                raise RuntimeError("Could not read recording duration. For long interviews, use MP3 or M4A.")
+                raise RuntimeError("Could not read recording duration. MP3 or M4A is recommended.")
             if duration > MAX_DURATION_SECONDS + 0.5:
-                raise RuntimeError(f"This workspace supports up to 120 minutes. Your recording is {format_seconds(duration)}.")
-            status.write(f"1/5 Audio ready — {format_seconds(duration)}")
+                raise RuntimeError(f"Maximum supported duration is 120 minutes. This recording is {format_seconds(duration)}.")
 
-            show_pipeline(2, "Preparing safe audio parts. Large files are split automatically without re-encoding.")
-            if source_path.stat().st_size <= MAX_CHUNK_BYTES:
+            pipeline("Stage 2 · Accuracy preparation", "Creating short lossless listening windows. No speech model runs on the Streamlit CPU.")
+            if duration <= 300 and source_path.stat().st_size <= MAX_CHUNK_BYTES:
                 chunks = [{
-                    "path": str(source_path),
-                    "duration": duration,
-                    "offset": 0.0,
-                    "keep_after": 0.0,
-                    "nominal_end": duration,
-                    "overlap_seconds": 0.0,
+                    "path": str(source_path), "duration": duration, "offset": 0.0,
+                    "keep_after": 0.0, "nominal_end": duration, "overlap_seconds": 0.0,
                 }]
             else:
-                progress.progress(5, text="Preparing safe overlapping chunks…")
                 chunks = split_audio_lossless(str(source_path), str(chunk_dir))
-            status.write(f"2/5 Prepared {len(chunks)} safe part{'s' if len(chunks) != 1 else ''}")
 
-            mixed_prompt = ""
+            prompt = context.strip()
             if language_label == "Urdu + English (mixed)":
-                mixed_prompt = (
-                    "Pakistani research interview with natural Urdu-English code-switching. "
-                    "Write Urdu in Urdu Perso-Arabic script and English in Latin script. "
-                    "Never output Devanagari/Hindi unless genuinely spoken. Preserve names, numbers, acronyms and technical terms exactly. "
-                )
-            speech_context = (mixed_prompt + context.strip())[:850]
+                prompt = (
+                    "Pakistani Urdu-English research interview. اردو and English may switch naturally. "
+                    "PASCO, procurement, private sector, agriculture, financing. " + prompt
+                )[:700]
 
-            def tp(done: int, total: int, message: str) -> None:
-                ceiling = 43 if (mode_label == "Maximum confidence" and openai_ready) else 70
-                progress.progress(min(76, 7 + int((done / max(1, total)) * ceiling)), text=message)
-                show_pipeline(3, message)
-                status.write("3/5 " + message)
+            def progress_cb(done: int, total: int, message: str) -> None:
+                progress.progress(min(82, 5 + int((done / max(1, total)) * 77)), text=message)
+                pipeline("Stage 3 · Speech recognition", f"{message} · {done}/{total} windows complete")
 
-            def on_chunk(chunk_result: dict) -> None:
-                live_chunks.append(chunk_result)
+            def chunk_cb(chunk: dict) -> None:
+                live_chunks.append(chunk)
                 show_live()
 
             result = transcribe_chunks(
@@ -396,101 +377,51 @@ with main:
                 api_key=groq_key,
                 language=language_map[language_label],
                 model=model,
-                context_prompt=speech_context,
-                progress_callback=tp,
-                chunk_callback=on_chunk,
+                context_prompt=prompt,
+                progress_callback=progress_cb,
+                chunk_callback=chunk_cb,
             )
 
+            pipeline("Stage 4 · Integrity scan", "Separating real speech from silence and flagging suspicious language output.")
             validated: list[dict] = []
-            verifier_model = None
-            chunk_results = result.get("chunk_results", [])
-            show_pipeline(4, "Checking each transcript part for corruption and, when configured, comparing it with an independent OpenAI transcription.")
-
-            for idx, cr in enumerate(chunk_results):
-                verifier_text = None
-                verifier_error = None
-                if mode_label == "Maximum confidence" and openai_ready:
-                    progress.progress(
-                        52 + int((idx / max(1, len(chunk_results))) * 27),
-                        text=f"Validating part {idx + 1} of {len(chunk_results)}…",
-                    )
-                    status.write(f"4/5 Independent validation — part {idx + 1} of {len(chunk_results)}")
-                    try:
-                        vr = transcribe_for_validation(
-                            path=chunks[idx]["path"],
-                            api_key=openai_key,
-                            context_prompt=(
-                                "Pakistani research interview; Urdu-English code-switching is expected. Preserve wording. "
-                                "Urdu uses Perso-Arabic script, English remains Latin. Never invent missing speech. "
-                                + context.strip()
-                            )[:900],
-                        )
-                        verifier_text = vr["text"]
-                        verifier_model = vr.get("model")
-                    except Exception as exc:
-                        verifier_error = str(exc)
-
-                assessment = assess_dual(cr.get("text", ""), verifier_text)
-                if cr.get("error"):
-                    assessment["reasons"] = list(assessment.get("reasons", [])) + ["primary engine error: " + str(cr["error"])[:180]]
-                    if verifier_text:
-                        assessment["selected_text"] = verifier_text
-                        assessment["selected_provider"] = "OpenAI rescue after primary failure"
-                        assessment["status"] = "review"
-                        assessment["score"] = max(68, int(assessment.get("score", 0)))
-                    else:
-                        assessment["status"] = "failed"
-                        assessment["score"] = 0
-
+            for cr in result.get("chunk_results", []):
+                assessment = assess_single(
+                    cr.get("text", ""),
+                    api_error=cr.get("error"),
+                    avg_no_speech_prob=cr.get("avg_no_speech_prob"),
+                    max_no_speech_prob=cr.get("max_no_speech_prob"),
+                    segment_count=int(cr.get("raw_segment_count", cr.get("segment_count", 0)) or 0),
+                )
                 assessment.update({
-                    "index": idx + 1,
+                    "index": cr.get("index"),
                     "start": float(cr.get("keep_after", cr.get("offset", 0.0))),
                     "end": float(cr.get("end", 0.0)),
                     "groq_text": cr.get("text", ""),
-                    "verifier_text": verifier_text,
-                    "verifier_error": verifier_error,
+                    "avg_no_speech_prob": cr.get("avg_no_speech_prob"),
+                    "avg_logprob": cr.get("avg_logprob"),
                 })
-
-                if verifier_error:
-                    assessment["reasons"] = list(assessment.get("reasons", [])) + ["independent validator unavailable for this part"]
-                    if assessment["status"] == "passed":
-                        assessment["status"] = "review"
-                        assessment["score"] = min(int(assessment["score"]), 78)
                 validated.append(assessment)
 
             health = overall_health(validated)
             result["validated_chunks"] = validated
             result["health"] = health
-            result["verifier_model"] = verifier_model
-            result["validated_text"] = "\n\n".join(c.get("selected_text", "").strip() for c in validated if c.get("selected_text", "").strip())
+            result["source_name"] = uploaded.name
 
-            show_pipeline(5, "Building the final validated transcript" + (" and English translation." if make_translation else "."))
+            progress.progress(88, text="Building final research outputs…")
+            pipeline("Stage 5 · Research outputs", "Building validated transcript and optional English translation.")
             if make_translation:
-                def trp(done: int, total: int, message: str) -> None:
-                    progress.progress(min(97, 80 + int((done / max(1, total)) * 17)), text=message)
-                    status.write("5/5 " + message)
-
                 result["translation"] = translate_validated_chunks(
                     validated_chunks=validated,
                     api_key=groq_key,
-                    progress_callback=trp,
+                    progress_callback=None,
                 )
 
-            result["source_name"] = uploaded.name
             st.session_state["result"] = result
-            progress.progress(100, text="Interview ready")
-            pipeline_box.markdown(
-                '<div class="q-pipeline"><strong>Processing complete ✓</strong><br>The final validated transcript is below. Use the Validation tab to review flagged time windows.</div>',
-                unsafe_allow_html=True,
-            )
-            status.update(label="Processing complete", state="complete", expanded=False)
+            progress.progress(100, text="Research transcript ready")
+            pipeline("Complete ✓", "Transcript, quality map, translation and downloads are ready below.")
 
         except Exception as exc:
-            pipeline_box.markdown(
-                '<div class="q-pipeline"><strong>Processing stopped</strong><br>' + html.escape(str(exc)) + '</div>',
-                unsafe_allow_html=True,
-            )
-            status.update(label="Processing failed", state="error", expanded=True)
+            pipeline("Processing stopped", str(exc))
             st.error(str(exc))
         finally:
             shutil.rmtree(work_dir, ignore_errors=True)
@@ -505,26 +436,37 @@ if result:
     source_name = result.get("source_name", "interview")
 
     st.markdown("---")
+    h_status = str(health.get("status", "unknown")).title()
     st.markdown(
-        f'<div class="q-health"><strong>Transcript health: {html.escape(str(health.get("status", "unknown")).title())}</strong> · Score {health.get("score",0)}/100 · {health.get("passed",0)} passed · {health.get("review",0)} review · {health.get("failed",0)} failed</div>',
+        f'''<div class="q-health"><div><div class="q-health-title">Transcript health · {html.escape(h_status)}</div><div class="q-health-sub">{health.get('passed',0)} speech windows passed · {health.get('review',0)} review · {health.get('failed',0)} failed · {health.get('silence',0)} silence</div></div><div class="q-score">{health.get('score',0)}/100</div></div>''',
         unsafe_allow_html=True,
     )
 
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Duration", format_seconds(duration))
-    m2.metric("Parts", int(result.get("parts", 1)))
-    m3.metric("Reliability", f"{health.get('score',0)}/100")
-    m4.metric("Validation", "Dual engine" if result.get("verifier_model") else "Single engine + QA")
+    m2.metric("Listening windows", int(result.get("parts", 1)))
+    m3.metric("Speech reliability", f"{health.get('score',0)}/100")
+    m4.metric("Engine", "Whisper Large V3")
 
-    tabs = st.tabs(["Transcript", "Translation", "Validation", "Summary", "Downloads"])
+    tabs = st.tabs(["Transcript", "Translation", "Quality", "Summary", "Downloads"])
 
     with tabs[0]:
         for c in validated:
             state = c.get("status", "review")
+            start = format_seconds(float(c.get("start", 0)))
+            end = format_seconds(float(c.get("end", 0)))
+            if state == "silence":
+                st.markdown(
+                    f'<div class="q-chunk"><div class="q-time">{start} — {end} · SILENCE</div><div class="q-silence">No confident speech detected.</div></div>',
+                    unsafe_allow_html=True,
+                )
+                continue
             icon = "✓" if state == "passed" else "!" if state == "review" else "×"
-            safe = html.escape(str(c.get("selected_text", ""))).replace("\n", "<br>")
+            safe = html.escape(str(c.get("selected_text", "") or "")).replace("\n", "<br>")
+            if not safe:
+                safe = "[Transcription unavailable — listen back to this window.]"
             st.markdown(
-                f'<div class="q-chunk"><div class="q-time">{format_seconds(float(c.get("start",0)))} — {format_seconds(float(c.get("end",0)))} &nbsp; {icon} {state.upper()} · {c.get("score",0)}/100</div><div class="q-text">{safe}</div><div class="q-provider">{html.escape(str(c.get("selected_provider","Groq")))}</div></div>',
+                f'<div class="q-chunk"><div class="q-time">{start} — {end} · {icon} {state.upper()} · {c.get("score",0)}/100</div><div class="q-text">{safe}</div><div class="q-provider">Groq Whisper Large V3</div></div>',
                 unsafe_allow_html=True,
             )
         with st.expander("Raw detailed timestamps"):
@@ -533,30 +475,30 @@ if result:
     with tabs[1]:
         if result.get("translation"):
             st.text_area("English translation", value=translation_text(result["translation"]), height=650, label_visibility="collapsed")
+            st.caption("FAILED source windows are withheld from translation rather than guessed.")
         else:
-            st.info("Translation was not selected for this run.")
+            st.info("English translation was disabled for this run.")
 
     with tabs[2]:
         rows = []
         for c in validated:
-            sim = c.get("similarity")
             rows.append({
                 "time": f"{format_seconds(float(c.get('start',0)))}–{format_seconds(float(c.get('end',0)))}",
-                "status": c.get("status"),
-                "score": c.get("score"),
-                "engine agreement": "" if sim is None else f"{float(sim):.0%}",
-                "selected": c.get("selected_provider"),
+                "state": c.get("status"),
+                "score": "—" if c.get("score") is None else c.get("score"),
+                "no-speech": "" if c.get("avg_no_speech_prob") is None else f"{float(c.get('avg_no_speech_prob')):.2f}",
                 "reason": ", ".join(c.get("reasons", [])),
             })
         st.dataframe(rows, use_container_width=True, hide_index=True)
-        st.caption("Listen back to REVIEW/FAILED windows and verify any direct quotation before publication.")
+        st.caption("SILENCE is neutral and does not reduce the reliability score. REVIEW/FAILED windows are where you should listen back.")
 
     with tabs[3]:
+        usable = [c for c in validated if c.get("status") in {"passed", "review"} and c.get("selected_text")]
         if "research_summary" not in st.session_state:
-            st.caption("Generate a clean English summary plus Roman Urdu from the validated transcript.")
-            if st.button("Generate research summary", use_container_width=True, key="summary_btn"):
-                with st.spinner("Building research summary…"):
-                    st.session_state["research_summary"] = build_research_summary(validated_chunks=validated, api_key=groq_key)
+            st.caption("Summary is generated only from usable transcript windows; failed audio is excluded.")
+            if st.button("Generate executive research summary", use_container_width=True):
+                with st.spinner("Building summary…"):
+                    st.session_state["research_summary"] = build_research_summary(validated_chunks=usable, api_key=groq_key)
                     st.rerun()
         else:
             summary = st.session_state["research_summary"]
@@ -571,13 +513,12 @@ if result:
             "source_file": source_name,
             "health": health,
             "model": result.get("model"),
-            "verifier_model": result.get("verifier_model"),
             "validated_chunks": validated,
         }
-        st.download_button("Download validated transcript (.txt)", validated_text(validated).encode("utf-8"), f"{stem}_validated_transcript.txt", "text/plain", use_container_width=True)
+        st.download_button("Validated transcript · TXT", validated_text(validated).encode("utf-8"), f"{stem}_validated_transcript.txt", "text/plain", use_container_width=True)
         if result.get("translation"):
-            st.download_button("Download English translation (.txt)", translation_text(result["translation"]).encode("utf-8"), f"{stem}_english_translation.txt", "text/plain", use_container_width=True)
-        st.download_button("Download raw timestamped transcript (.txt)", timestamped_text(segments).encode("utf-8"), f"{stem}_raw_timestamped.txt", "text/plain", use_container_width=True)
-        st.download_button("Download raw subtitles (.srt)", transcript_to_srt(segments).encode("utf-8"), f"{stem}_raw.srt", "application/x-subrip", use_container_width=True)
-        st.download_button("Download research table (.csv)", segments_to_csv(segments).encode("utf-8-sig"), f"{stem}_segments.csv", "text/csv", use_container_width=True)
-        st.download_button("Download validation report (.json)", json.dumps(report, ensure_ascii=False, indent=2).encode("utf-8"), f"{stem}_validation.json", "application/json", use_container_width=True)
+            st.download_button("English translation · TXT", translation_text(result["translation"]).encode("utf-8"), f"{stem}_english_translation.txt", "text/plain", use_container_width=True)
+        st.download_button("Raw timestamped transcript · TXT", timestamped_text(segments).encode("utf-8"), f"{stem}_raw_timestamped.txt", "text/plain", use_container_width=True)
+        st.download_button("Subtitles · SRT", transcript_to_srt(segments).encode("utf-8"), f"{stem}_raw.srt", "application/x-subrip", use_container_width=True)
+        st.download_button("Research table · CSV", segments_to_csv(segments).encode("utf-8-sig"), f"{stem}_segments.csv", "text/csv", use_container_width=True)
+        st.download_button("Quality report · JSON", json.dumps(report, ensure_ascii=False, indent=2).encode("utf-8"), f"{stem}_quality.json", "application/json", use_container_width=True)

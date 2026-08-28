@@ -11,6 +11,7 @@ ACCURACY_MODEL = "whisper-large-v3"
 FAST_MODEL = "whisper-large-v3-turbo"
 TRANSCRIPTION_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 TRANSLATION_URL = "https://api.groq.com/openai/v1/audio/translations"
+MIN_REQUEST_INTERVAL_SECONDS = 3.15
 
 LOGPROB_REVIEW_THRESHOLD = -1.0
 NO_SPEECH_REVIEW_THRESHOLD = 0.6
@@ -22,10 +23,10 @@ def _compact_prompt(context: str, previous_tail: str = "") -> str:
     context = (context or "").strip()
     previous_tail = (previous_tail or "").strip()
     if context:
-        parts.append(context[:600])
+        parts.append(context[:500])
     if previous_tail:
-        parts.append("Previous transcript ending: " + previous_tail[-280:])
-    return "\n".join(parts)[:850]
+        parts.append(previous_tail[-240:])
+    return "\n".join(parts)[:720]
 
 
 def _post_audio(*, path: str, api_key: str, endpoint: str, model: str, language: Optional[str] = None, prompt: str = "") -> dict:
@@ -96,6 +97,18 @@ def _review_metadata(seg: dict) -> tuple[bool, list[str]]:
     return bool(reasons), reasons
 
 
+def _payload_stats(payload: dict) -> dict:
+    raw = payload.get("segments") or []
+    no_speech = [float(s["no_speech_prob"]) for s in raw if isinstance(s.get("no_speech_prob"), (int, float))]
+    logprobs = [float(s["avg_logprob"]) for s in raw if isinstance(s.get("avg_logprob"), (int, float))]
+    return {
+        "raw_segment_count": len(raw),
+        "avg_no_speech_prob": (sum(no_speech) / len(no_speech)) if no_speech else None,
+        "max_no_speech_prob": max(no_speech) if no_speech else None,
+        "avg_logprob": (sum(logprobs) / len(logprobs)) if logprobs else None,
+    }
+
+
 def _merge_payload(*, payload: dict, offset: float, keep_after: float, all_segments: list[dict], text_parts: list[str], languages: list[str]) -> str:
     language = str(payload.get("language", "") or "").strip()
     if language:
@@ -163,10 +176,16 @@ def transcribe_chunks(
     total = len(chunks)
     previous_tail = ""
     primary_failures = 0
+    last_request_started = 0.0
 
     for i, chunk in enumerate(chunks, start=1):
         if progress_callback:
-            progress_callback(i - 1, total, f"Transcribing part {i} of {total}…")
+            progress_callback(i - 1, total, f"Listening to minute {i} of {total}…")
+
+        elapsed = time.monotonic() - last_request_started
+        if last_request_started and elapsed < MIN_REQUEST_INTERVAL_SECONDS:
+            time.sleep(MIN_REQUEST_INTERVAL_SECONDS - elapsed)
+        last_request_started = time.monotonic()
 
         payload = None
         primary_error = None
@@ -183,67 +202,57 @@ def transcribe_chunks(
             primary_error = str(exc)
             primary_failures += 1
 
-        nominal_end = float(
-            chunk.get("nominal_end")
-            or (float(chunk.get("offset", 0.0)) + float(chunk.get("duration", 0.0)))
-        )
-
-        if payload is None:
-            chunk_result = {
-                "index": i,
-                "offset": float(chunk.get("offset", 0.0)),
-                "keep_after": float(chunk.get("keep_after", chunk.get("offset", 0.0))),
-                "end": nominal_end,
-                "duration": float(chunk.get("duration", 0.0)),
-                "text": "",
-                "language": "",
-                "segment_count": 0,
-                "error": primary_error,
-            }
-            chunk_results.append(chunk_result)
-            if chunk_callback:
-                chunk_callback(chunk_result)
-            if progress_callback:
-                progress_callback(i, total, f"Primary engine could not finish part {i}; preserving the run for validation/rescue.")
-            continue
-
-        before = len(all_segments)
-        text = _merge_payload(
-            payload=payload,
-            offset=float(chunk.get("offset", 0.0)),
-            keep_after=float(chunk.get("keep_after", chunk.get("offset", 0.0))),
-            all_segments=all_segments,
-            text_parts=text_parts,
-            languages=languages,
-        )
-        chunk_segments = all_segments[before:]
-        language_used = str(payload.get("language", "") or "").strip()
-        chunk_result = {
+        nominal_end = float(chunk.get("nominal_end") or (float(chunk.get("offset", 0.0)) + float(chunk.get("duration", 0.0))))
+        base_result = {
             "index": i,
             "offset": float(chunk.get("offset", 0.0)),
             "keep_after": float(chunk.get("keep_after", chunk.get("offset", 0.0))),
             "end": nominal_end,
             "duration": float(chunk.get("duration", 0.0)),
-            "text": text,
-            "language": language_used,
-            "segment_count": len(chunk_segments),
-            "error": None,
         }
+
+        if payload is None:
+            chunk_result = {
+                **base_result,
+                "text": "",
+                "language": "",
+                "segment_count": 0,
+                "raw_segment_count": 0,
+                "avg_no_speech_prob": None,
+                "max_no_speech_prob": None,
+                "avg_logprob": None,
+                "error": primary_error,
+            }
+        else:
+            before = len(all_segments)
+            text = _merge_payload(
+                payload=payload,
+                offset=base_result["offset"],
+                keep_after=base_result["keep_after"],
+                all_segments=all_segments,
+                text_parts=text_parts,
+                languages=languages,
+            )
+            chunk_segments = all_segments[before:]
+            stats = _payload_stats(payload)
+            chunk_result = {
+                **base_result,
+                "text": text,
+                "language": str(payload.get("language", "") or "").strip(),
+                "segment_count": len(chunk_segments),
+                "error": None,
+                **stats,
+            }
+            if text:
+                previous_tail = text[-260:]
+
         chunk_results.append(chunk_result)
-        if text:
-            previous_tail = text[-350:]
         if chunk_callback:
             chunk_callback(chunk_result)
         if progress_callback:
-            progress_callback(i, total, f"Finished part {i} of {total}.")
+            progress_callback(i, total, f"Minute {i} of {total} complete.")
 
-    duration = 0.0
-    if chunks:
-        duration = max(float(chunk.get("nominal_end", 0.0) or 0.0) for chunk in chunks)
-        if duration <= 0:
-            last = chunks[-1]
-            duration = float(last.get("offset", 0.0)) + float(last.get("duration", 0.0))
-
+    duration = max((float(c.get("nominal_end", 0.0) or 0.0) for c in chunks), default=0.0)
     return {
         "text": "\n".join(text_parts).strip(),
         "segments": all_segments,
@@ -257,50 +266,4 @@ def transcribe_chunks(
 
 
 def translate_chunks(*, chunks: list[dict], api_key: str, context_prompt: str = "", progress_callback: Optional[Callable[[int, int, str], None]] = None) -> dict:
-    if not api_key:
-        raise ValueError("A Groq API key is required.")
-
-    all_segments: list[dict] = []
-    text_parts: list[str] = []
-    languages: list[str] = []
-    total = len(chunks)
-    previous_tail = ""
-
-    for i, chunk in enumerate(chunks, start=1):
-        if progress_callback:
-            progress_callback(i - 1, total, f"Translating part {i} of {total}…")
-        payload = _post_audio(
-            path=chunk["path"],
-            api_key=api_key,
-            endpoint=TRANSLATION_URL,
-            model=ACCURACY_MODEL,
-            prompt=_compact_prompt(context_prompt, previous_tail),
-        )
-        text = _merge_payload(
-            payload=payload,
-            offset=float(chunk.get("offset", 0.0)),
-            keep_after=float(chunk.get("keep_after", chunk.get("offset", 0.0))),
-            all_segments=all_segments,
-            text_parts=text_parts,
-            languages=languages,
-        )
-        if text:
-            previous_tail = text[-350:]
-        if progress_callback:
-            progress_callback(i, total, f"Finished translation part {i} of {total}.")
-
-    duration = 0.0
-    if chunks:
-        duration = max(float(chunk.get("nominal_end", 0.0) or 0.0) for chunk in chunks)
-        if duration <= 0:
-            last = chunks[-1]
-            duration = float(last.get("offset", 0.0)) + float(last.get("duration", 0.0))
-
-    return {
-        "text": "\n".join(text_parts).strip(),
-        "segments": all_segments,
-        "duration": duration,
-        "model": ACCURACY_MODEL,
-        "parts": total,
-        "languages": languages,
-    }
+    raise RuntimeError("Audio translation is disabled in free production mode. Text translation is used after validation instead.")

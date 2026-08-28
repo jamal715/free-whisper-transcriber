@@ -143,7 +143,16 @@ def _merge_payload(*, payload: dict, offset: float, keep_after: float, all_segme
     return merged
 
 
-def transcribe_chunks(*, chunks: list[dict], api_key: str, language: Optional[str] = None, model: str = ACCURACY_MODEL, context_prompt: str = "", progress_callback: Optional[Callable[[int, int, str], None]] = None) -> dict:
+def transcribe_chunks(
+    *,
+    chunks: list[dict],
+    api_key: str,
+    language: Optional[str] = None,
+    model: str = ACCURACY_MODEL,
+    context_prompt: str = "",
+    progress_callback: Optional[Callable[[int, int, str], None]] = None,
+    chunk_callback: Optional[Callable[[dict], None]] = None,
+) -> dict:
     if not api_key:
         raise ValueError("A Groq API key is required.")
 
@@ -163,8 +172,12 @@ def transcribe_chunks(*, chunks: list[dict], api_key: str, language: Optional[st
         primary_error = None
         try:
             payload = _post_audio(
-                path=chunk["path"], api_key=api_key, endpoint=TRANSCRIPTION_URL, model=model,
-                language=language, prompt=_compact_prompt(context_prompt, previous_tail),
+                path=chunk["path"],
+                api_key=api_key,
+                endpoint=TRANSCRIPTION_URL,
+                model=model,
+                language=language,
+                prompt=_compact_prompt(context_prompt, previous_tail),
             )
         except Exception as exc:
             primary_error = str(exc)
@@ -176,7 +189,7 @@ def transcribe_chunks(*, chunks: list[dict], api_key: str, language: Optional[st
         )
 
         if payload is None:
-            chunk_results.append({
+            chunk_result = {
                 "index": i,
                 "offset": float(chunk.get("offset", 0.0)),
                 "keep_after": float(chunk.get("keep_after", chunk.get("offset", 0.0))),
@@ -186,7 +199,10 @@ def transcribe_chunks(*, chunks: list[dict], api_key: str, language: Optional[st
                 "language": "",
                 "segment_count": 0,
                 "error": primary_error,
-            })
+            }
+            chunk_results.append(chunk_result)
+            if chunk_callback:
+                chunk_callback(chunk_result)
             if progress_callback:
                 progress_callback(i, total, f"Primary engine could not finish part {i}; preserving the run for validation/rescue.")
             continue
@@ -202,7 +218,7 @@ def transcribe_chunks(*, chunks: list[dict], api_key: str, language: Optional[st
         )
         chunk_segments = all_segments[before:]
         language_used = str(payload.get("language", "") or "").strip()
-        chunk_results.append({
+        chunk_result = {
             "index": i,
             "offset": float(chunk.get("offset", 0.0)),
             "keep_after": float(chunk.get("keep_after", chunk.get("offset", 0.0))),
@@ -212,9 +228,12 @@ def transcribe_chunks(*, chunks: list[dict], api_key: str, language: Optional[st
             "language": language_used,
             "segment_count": len(chunk_segments),
             "error": None,
-        })
+        }
+        chunk_results.append(chunk_result)
         if text:
             previous_tail = text[-350:]
+        if chunk_callback:
+            chunk_callback(chunk_result)
         if progress_callback:
             progress_callback(i, total, f"Finished part {i} of {total}.")
 
@@ -251,8 +270,11 @@ def translate_chunks(*, chunks: list[dict], api_key: str, context_prompt: str = 
         if progress_callback:
             progress_callback(i - 1, total, f"Translating part {i} of {total}…")
         payload = _post_audio(
-            path=chunk["path"], api_key=api_key, endpoint=TRANSLATION_URL,
-            model=ACCURACY_MODEL, prompt=_compact_prompt(context_prompt, previous_tail),
+            path=chunk["path"],
+            api_key=api_key,
+            endpoint=TRANSLATION_URL,
+            model=ACCURACY_MODEL,
+            prompt=_compact_prompt(context_prompt, previous_tail),
         )
         text = _merge_payload(
             payload=payload,

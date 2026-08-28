@@ -12,6 +12,11 @@ MAX_CHUNK_BYTES = 19 * 1024 * 1024
 TARGET_CHUNK_BYTES = 16 * 1024 * 1024
 DEFAULT_OVERLAP_SECONDS = 2.0
 FREE_TIER_AUDIO_BUDGET_SECONDS = 7190.0
+# Whisper Large V3 is substantially more reliable on shorter windows.  Three
+# minutes is a practical research compromise: much shorter than our old 6–10
+# minute pieces, but still few enough requests for Groq's free-tier RPM limit.
+ACCURACY_MAX_SEGMENT_SECONDS = 180
+MIN_SEGMENT_SECONDS = 45
 
 SUPPORTED_OUTPUT_EXTENSIONS = {
     ".m4a": ".m4a",
@@ -129,8 +134,14 @@ def split_audio_lossless(input_path: str, output_dir: str) -> list[dict]:
         raise RuntimeError("Could not read the recording duration. Please use M4A or MP3 for large files.")
 
     output_ext = SUPPORTED_OUTPUT_EXTENSIONS.get(source.suffix.lower(), ".m4a")
-    seconds = int(duration * (TARGET_CHUNK_BYTES / max(1, size_bytes)))
-    segment_seconds = max(90, min(900, seconds))
+
+    # Size-derived limit keeps every request comfortably below the provider file
+    # cap.  The time cap is deliberately stricter for research accuracy.
+    size_based_seconds = int(duration * (TARGET_CHUNK_BYTES / max(1, size_bytes)))
+    segment_seconds = max(
+        MIN_SEGMENT_SECONDS,
+        min(ACCURACY_MAX_SEGMENT_SECONDS, size_based_seconds),
+    )
     out_dir = Path(output_dir)
 
     for _ in range(6):
@@ -143,7 +154,7 @@ def split_audio_lossless(input_path: str, output_dir: str) -> list[dict]:
         )
         if chunks and all(Path(c["path"]).stat().st_size <= MAX_CHUNK_BYTES for c in chunks):
             return chunks
-        segment_seconds = max(45, int(segment_seconds * 0.72))
+        segment_seconds = max(MIN_SEGMENT_SECONDS, int(segment_seconds * 0.72))
 
     raise RuntimeError(
         "The recording could not be split below the transcription service's file-size limit. "
